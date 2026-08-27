@@ -6,7 +6,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 REQUIRED_BASELINE_PATHS = [
     "scripts/run_anaFit_J100.sh",
     "scripts/run_anaFit_J50.sh",
@@ -90,14 +89,26 @@ def _parse_args() -> argparse.Namespace:
 
 def _run_fast_checks(repo_root: Path, test_targets: list[str]) -> None:
     _ensure_python_tools_available(["pytest"])
-    run_command([sys.executable, "-m", "pytest", *test_targets], repo_root)
+    run_command(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-m",
+            "not requires_analysis_dependencies",
+            *test_targets,
+        ],
+        repo_root,
+    )
 
 
 def _run_full_checks(repo_root: Path, python_targets: list[str], test_targets: list[str]) -> None:
     _run_fast_checks(repo_root, test_targets)
     _ensure_python_tools_available(["ruff", "black"])
     run_command([sys.executable, "-m", "ruff", "check", *python_targets, *test_targets], repo_root)
-    run_command([sys.executable, "-m", "black", "--check", *python_targets, *test_targets], repo_root)
+    run_command(
+        [sys.executable, "-m", "black", "--check", *python_targets, *test_targets], repo_root
+    )
 
 
 def main() -> None:
@@ -117,6 +128,7 @@ def main() -> None:
         "tests/test_analysis_reference.py",
         "tests/test_compare_root_outputs.py",
         "tests/test_repo_utils.py",
+        "tests/test_run_anaFit.py",
     ]
 
     if args.mode == "fast":
