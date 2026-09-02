@@ -3541,3 +3541,564 @@ workflow this branch has actually been using since Chunk 1. Going
 forward, chunks continue to follow the same Step A → human verification →
 Step B sequence as before; only the document's account of how that gets
 reviewed on GitHub changed. Chunks 2 through 12 remain open.
+
+## 2026-09-02: Activity-log completeness audit — three missing entries backfilled
+
+### Objective
+
+The user asked directly whether every change on this branch had been
+recorded in this log. Rather than assume yes, cross-checked every commit
+on `tier-3-completion` since it branched from `tier-3-claude` (`git log
+--oneline 5cb6a32..HEAD`) against every dated section header in this file.
+Found three commits with no corresponding entry. This entry backfills all
+three, appended here per guardrail 2 (append-only; new entries go at the
+end, existing ones are never reordered or edited) — the same approach
+this log's own 2026-07-29 "Activity-log correction" entry used for an
+identical situation.
+
+### Gap 1 — `3f025cc`: "Add Tier 3 completion plan"
+
+This is the commit that added `doc/TIER3_COMPLETION_PLAN.md` itself (1,318
+lines) to this branch — the authoritative, from-scratch Tier 3 execution
+plan described in this file's own preceding entries. No production code
+was changed. This predates the Chunk 0 baseline entry immediately
+following it in this log and was the first commit made on
+`tier-3-completion` after branching.
+
+### Gap 2 — `e3379fc`: "Enable hosted CI on tier-3-completion"
+
+Added `tier-3-completion` to the branch-trigger lists in both
+`.github/workflows/tier1-root-comparison.yml` (`pull_request` trigger) and
+`.github/workflows/scientific-analysis.yml` (`push` trigger), matching the
+same trigger coverage already present for `harry`, `tier-2-m365`, and
+`tier-3-claude`. This commit also included a pre-existing, uncommitted
+local edit (from the prior "updated workflow to current branch" session,
+made by the user, not by this session) adding `tier-3-claude` to both
+files and removing `tier1-root-comparison.yml`'s separate `push` trigger
+for `harry`/`tier-2-m365` — both changes were already present, uncommitted,
+in the working tree when this session began, and were committed together
+since they touched the same lines. This commit is what made the hosted
+`scientific-analysis.yml` push-triggered workflow actually run against
+this branch for the first time; its first resulting run
+(`https://github.com/HookCoding/FrequentistFramework/actions/runs/33629659100`)
+passed.
+
+### Gap 3 — `0da38fd`: "Potential fix for pull request finding"
+
+Not a commit made by this session — authored and committed directly by
+the user (Harry Hook) via GitHub's web UI, accepting a Copilot Autofix
+suggestion on PR #6. Discovered when this session found the branch had
+diverged from `origin/tier-3-completion` shortly after the push that
+enabled hosted CI, and rebased Gap 2's follow-on commit onto it. Changes
+`tests/test_analysis_workflows_integration.py`: merges two adjacent
+Python string literals in `APPROVED_SCIENTIFIC_PYTHON_EXECUTABLES` (the
+LCG_102a CentOS9/Ubuntu Python executable path strings) into one literal
+each — a Copilot-flagged readability finding about relying on implicit
+string-literal concatenation. Zero behavioral change (the concatenated
+and single-literal forms produce identical string values); confirmed by
+this session's full quality gate passing unchanged immediately after the
+rebase.
+
+### Verification performed
+
+- `git log --oneline 5cb6a32..HEAD` (13 commits) cross-referenced against
+  `grep -n "^## 2026-09-02" doc/ACTIVITY_LOG.md` (10 entries before this
+  one) — confirmed exactly these three gaps and no others.
+- Commit timestamps checked directly (`git log --reverse --format="%h %ad
+  %s" --date=iso-strict`) to confirm claims in this entry against the
+  actual record rather than memory: `0da38fd` (13:52:52+01:00, i.e.
+  14:52:52 in this session's own +02:00 commits) postdates `e3379fc`
+  (14:19:23+02:00), confirming it was authored on GitHub after the push
+  that created the branch there, and predates `351b7d7` (14:59:04+02:00),
+  confirming the rebase placed it correctly. This also caught a drafting
+  error before commit: an earlier draft of this entry cited "Chunk 1.B
+  supplementary verification" (`abfde43`, committed 14:09:51+02:00 —
+  before `0da38fd` existed) as having verified Gap 3's change, which is
+  impossible by timestamp alone. The commit that actually verified it is
+  "Housekeeping — remove duplicate `subprocess` import," whose real
+  J100/J50 integration-gate run (164.10s) ran after the rebase and
+  exercises `APPROVED_SCIENTIFIC_PYTHON_EXECUTABLES` (the constant
+  `0da38fd` edited) directly, since that test validates the runtime
+  Python executable against it during the actual rerun.
+- No code, test, or gate changes in this entry — documentation only,
+  backfilling the record for commits already made, pushed, and verified
+  by their own contemporaneous gate runs (Gap 1: no code to verify; Gap 2:
+  verified by the hosted CI run cited above; Gap 3: verified as described
+  immediately above).
+- `git diff --check` → passed.
+
+### Current status
+
+All 13 commits currently on `tier-3-completion` (branch point through
+`16f61fc`) now have a corresponding activity-log entry. Chunks 2 through
+12 remain open.
+
+## 2026-09-02: Tier-3 refactoring — Chunk 2.A: characterization tests for `write_analysis_results`
+
+### Objective
+
+Pin down the current, unmodified behavior of `write_analysis_results()` in
+`python/run_anaFit.py` before extracting it into `run_manifest.py`, per
+`doc/TIER3_COMPLETION_PLAN.md` Chunk 2.
+
+### Pre-change state
+
+`write_analysis_results()` already had three direct tests
+(`test_write_analysis_results_writes_success_manifest`,
+`test_write_analysis_results_records_masked_fit`,
+`test_write_analysis_results_atomically_replaces_existing_manifest`),
+covering the success payload, the masked-fit payload, and atomic
+replacement of a pre-existing manifest. All three pass native `bool`/
+`float` values for `masked`/`p_chi2`, so none of them exercises the
+function body's explicit `bool(masked)` and `float(p_chi2)` coercion
+calls — a real gap, since a value that is merely truthy (not already a
+`bool`) or an int (not already a `float`) was never used to prove the
+coercion is what actually produces the JSON-native type, as opposed to
+the value simply already being the right type.
+
+### Target function — inputs and outputs (as it exists today)
+
+| Function | Inputs | Outputs | Side effects |
+|---|---|---|---|
+| `write_analysis_results(folder, p_chi2, masked, provenance)` | `folder: str`, `p_chi2: float`, `masked: bool`, `provenance: dict` | `str` (path to the written manifest) | atomically writes `<folder>/analysis_results.json` (schema v2) via a temp file + `os.replace`; deletes no pre-existing state itself (the atomic replace handles that) |
+
+### Tests added
+
+- `test_write_analysis_results_coerces_masked_and_p_chi2_to_json_native_types`
+  — calls the real `write_analysis_results()` with `p_chi2=1` (an `int`)
+  and `masked=1` (a truthy `int`, not a `bool`), then asserts the written-
+  and-reread JSON payload has `p_chi2` as a Python `float` (`1.0`, via
+  `isinstance`) and `masked` as the Python `bool` `True` (via `is True`
+  and `isinstance`) — proving the function's `bool()`/`float()` calls are
+  load-bearing, not redundant.
+
+### What this commit does NOT do
+
+No production file was modified. `git diff --stat -- python/run_anaFit.py`
+was empty throughout this change — only `tests/test_run_anaFit.py` was
+touched (one new test, 29 lines).
+
+### Verification performed
+
+- `python -m pytest tests/test_run_anaFit.py -v -k write_analysis_results`
+  → 4 passed (the 3 existing tests plus the new coercion test), run
+  against the unmodified `python/run_anaFit.py`.
+- `python -m pytest tests/test_run_anaFit.py -v` → 50 passed (full-file
+  regression check).
+- `python scripts/quality_check.py --mode full` → 129 passed, 2
+  deselected; ruff clean; black clean (10 files unchanged).
+- `git diff --stat` → only `tests/test_run_anaFit.py` touched.
+- `git diff --check` → passed (no whitespace errors).
+
+### Compliance review (Section 8, Characterization checklist)
+
+1. Chunk 2, Step A.
+2. `git diff --stat` shows only `tests/test_run_anaFit.py` — zero
+   production files touched.
+3. The new test asserts real output values and their concrete Python
+   types (`isinstance` checks), not merely "does not raise."
+4. Tests were run against the unmodified target file before any
+   production change; results reported in full above for review.
+5. Human-verification checkpoint: presented to the user in session for
+   confirmation before Step B's commit is made (recorded per Step B's own
+   activity-log entry once given).
+
+### Remaining open chunks
+
+Chunk 2.B (extraction of `run_manifest.py`) and Chunks 3 through 12 are
+open.
+
+## 2026-09-02: Tier-3 refactoring — Chunk 2.B: extract `run_manifest.py`
+
+### Objective
+
+Move `write_analysis_results()`, characterized in Chunk 2.A (commit
+`639b94d`), out of `python/run_anaFit.py` into a new
+`python/run_manifest.py`, per `doc/TIER3_COMPLETION_PLAN.md` Chunk 2.
+
+### What changed
+
+- `python/run_manifest.py` created, containing `write_analysis_results()`
+  moved verbatim from `python/run_anaFit.py` (identical body; only the
+  `json`/`os` imports it actually needs were added at module top level).
+- `python/run_anaFit.py`: the function definition removed; replaced with
+  `from run_manifest import write_analysis_results` (flat sibling-import
+  style, added directly below the existing
+  `from run_execution import execute, execute_required` line). The single
+  call site (inside `run_anaFit()`, assembling the success manifest) is
+  unchanged — only the definition moved, not the call site.
+- `tests/test_run_anaFit.py`: the `_example_analysis_provenance()` helper
+  and all four `write_analysis_results` tests (the three original plus
+  Chunk 2.A's new coercion test) removed.
+- `tests/test_run_manifest.py` created: the four relocated tests plus
+  their `_example_analysis_provenance()` helper, using the plain
+  `from python import run_manifest` style (no `ROOT`/sibling stubbing
+  needed — this module touches neither) and calling
+  `run_manifest.write_analysis_results(...)` directly instead of through
+  the `_load_run_anafit_module`/`monkeypatch` machinery, which these tests
+  no longer need at all.
+- `scripts/quality_check.py`: added `python/run_manifest.py` to
+  `python_targets` and `tests/test_run_manifest.py` to `test_targets`.
+
+### Test Relocation Rule: no exception needed this time
+
+Unlike Chunk 1.B (where `execute_required`'s internal call to `execute`
+broke the old `monkeypatch.setattr(module, "execute", ...)` target once
+the two functions were split across module namespaces),
+`write_analysis_results` does not call, or get called by, any other
+relocated function — it is called directly by `run_anaFit()`, which stays
+in `python/run_anaFit.py`. The two coordinator-level tests
+(`test_run_anafit_writes_provenance_for_successful_unmasked_fit`,
+`test_run_anafit_quicklimit_failure_prevents_success_manifest`) already
+patch `write_analysis_results` via
+`monkeypatch.setattr(module, "write_analysis_results", fake)`, where
+`module` is the loaded `run_anaFit` object — since `run_anaFit()` still
+resolves that name from its own module's globals (now bound there via the
+new `from run_manifest import write_analysis_results` line), this
+continues to intercept correctly with no change. Confirmed by running
+both tests unchanged after the move: both pass. The four relocated tests'
+own diff genuinely is import-statement-and-call-site-only, exactly as the
+Test Relocation Rule's baseline describes.
+
+### Confirm: no scientific behavior changed
+
+`write_analysis_results()`'s body, including the `bool(masked)`/
+`float(p_chi2)` coercion Chunk 2.A's new test specifically exercises, is
+byte-for-byte identical to before the move. The one call site in
+`run_anaFit()` is untouched.
+
+### Verification performed
+
+- `python -m pytest tests/test_run_manifest.py tests/test_run_anaFit.py -v`
+  → 4 + 46 = 50 passed (same total as before the move: the four
+  `write_analysis_results` tests moved out of `test_run_anaFit.py`, into
+  `test_run_manifest.py`, net count unchanged).
+- `grep -n "^def write_analysis_results" python/run_anaFit.py` → no
+  output (definition fully removed).
+- `python scripts/quality_check.py --mode full` → 129 passed, 2
+  deselected; Ruff passed; Black passed (no reformatting needed); exit
+  code 0.
+- `git diff --check` → passed.
+- No integration-gate rerun performed for this chunk — Chunk 2 is not one
+  of the chunks Section 7 marks mandatory (4, 5, 8, and always before 12);
+  `write_analysis_results` touches no branch condition or template logic,
+  only relocates one already-isolated pure function.
+
+### Compliance review (Section 8, Extraction checklist)
+
+1. Chunk 2, Step B (this entry).
+2. Step A is committed (`639b94d`) and referenced above.
+3. No scientific constants, references, tolerances, dependency revisions,
+   or canonical workflow arguments touched.
+4. Relocated tests' diffs are import-statement-and-call-site-only, as
+   confirmed above — no monkeypatch-target exception was needed this
+   time.
+5. The one relocated function is covered by its four relocated tests; no
+   new functions were introduced this chunk.
+6. Confirmed by grep: `run_anaFit.py` actually imports and never
+   redefines `write_analysis_results`.
+7. Only this chunk's five changed/new files were staged.
+8. All required Section 7 gates ran and passed, output captured above.
+9. `git diff --check` passed.
+10. This activity-log entry appended (not a rewrite of any existing
+    section).
+11. Chunks 3 through 12 remain open, listed below.
+12. No other branch's Tier 3 work was consulted.
+
+### Remaining open chunks
+
+Chunks 3 through 12 in `doc/TIER3_COMPLETION_PLAN.md` are open. Chunk 2
+(both Step A and Step B) is complete and verified.
+
+## 2026-09-02: Tier-3 refactoring — Chunk 3.A: characterization tests for the provenance pipeline
+
+### Objective
+
+Pin down the current, unmodified behavior of all seven functions in the
+repository-discovery -> path-resolution -> hashing -> Git-revision ->
+runtime-collection -> payload-assembly pipeline in `python/run_anaFit.py`
+before extracting them into `run_provenance.py`, per
+`doc/TIER3_COMPLETION_PLAN.md` Chunk 3.
+
+### Pre-change state
+
+All seven target functions already had direct tests (18 test functions,
+19 cases counting the `warns_for_tracked_modifications` parametrization):
+`get_repository_root` (2), `resolve_analysis_path` (3),
+`calculate_file_sha256` (2), `build_file_provenance` (3),
+`get_git_revision` (4 cases), `collect_scientific_runtime` (2),
+`build_analysis_provenance` (2). All 19 pass unmodified.
+
+Reviewing each function's contract against its tests found one real gap,
+duplicated across two functions: both `resolve_analysis_path(path,
+repository_root=None)` and `build_file_provenance(path,
+repository_root=None)` have a documented `repository_root=None` fallback
+branch (`if repository_root is None: repository_root =
+get_repository_root()`) that no existing test exercises — every existing
+test, and every real call site in `build_analysis_provenance` (confirmed
+by `grep -n "resolve_analysis_path(\|build_file_provenance("
+python/run_anaFit.py`), always passes `repository_root` explicitly. This
+fallback is not currently reached in production, but it is part of each
+function's documented signature, and both functions become independently
+importable from `python/run_provenance.py` after this chunk, at which
+point any future direct caller could reasonably omit it.
+
+### Target functions — inputs and outputs (as they exist today)
+
+| Function | Inputs | Outputs | Side effects |
+|---|---|---|---|
+| `get_repository_root()` | none | `Path` | raises `RuntimeError` if no `.git` found |
+| `resolve_analysis_path(path, repository_root=None)` | `path: str`, optional `repository_root` | `Path` | raises `FileNotFoundError` if missing |
+| `calculate_file_sha256(path)` | `path` | `str` (hex digest) | reads the file in chunks |
+| `build_file_provenance(path, repository_root=None)` | as above | `dict {"path", "sha256"}` | — |
+| `get_git_revision(repository_path)` | `repository_path` | `(str, bool)` (40-hex SHA, dirty flag) | runs `git rev-parse HEAD` + `git status --porcelain`; warns (does not fail) on a dirty tree |
+| `collect_scientific_runtime()` | none | `dict {"python_version","python_executable","root_version"}` | requires `ROOT` importable |
+| `build_analysis_provenance(...)` | 12 named arguments | full provenance `dict` | calls all of the above |
+
+### Tests added
+
+- `test_resolve_analysis_path_uses_get_repository_root_when_omitted` —
+  patches `get_repository_root` to return a controlled `tmp_path`, calls
+  `resolve_analysis_path("Input/data.root")` with `repository_root`
+  omitted, asserts the file is resolved relative to the patched root —
+  proving the fallback branch actually calls and uses
+  `get_repository_root()`.
+- `test_build_file_provenance_uses_get_repository_root_when_omitted` —
+  same proof for `build_file_provenance`.
+
+### What this commit does NOT do
+
+No production file was modified. `git diff --stat -- python/run_anaFit.py`
+was empty throughout this change — only `tests/test_run_anaFit.py` was
+touched (two new tests, 43 lines).
+
+### Verification performed
+
+- `python -m pytest tests/test_run_anaFit.py -v -k "sha256 or
+  git_revision or scientific_runtime or repository_root or
+  resolve_analysis_path or build_file_provenance or
+  build_analysis_provenance"` → 21 passed (19 pre-existing cases plus the
+  2 new gap tests), run against the unmodified `python/run_anaFit.py`.
+- `python -m pytest tests/test_run_anaFit.py -v` → 48 passed (full-file
+  regression check).
+- `python scripts/quality_check.py --mode full` → 131 passed, 2
+  deselected; ruff clean; black clean (12 files unchanged).
+- `git diff --stat` → only `tests/test_run_anaFit.py` touched.
+- `git diff --check` → passed.
+
+### Compliance review (Section 8, Characterization checklist)
+
+1. Chunk 3, Step A.
+2. `git diff --stat` shows only `tests/test_run_anaFit.py` — zero
+   production files touched.
+3. Both new tests assert a real resolved path / provenance dict produced
+   from a controlled fixture, not merely "does not raise."
+4. Tests were run against the unmodified target file before any
+   production change; results reported in full above for review.
+5. Human-verification checkpoint: presented to the user in session for
+   confirmation before Step B's commit is made (recorded per Step B's own
+   activity-log entry once given).
+
+### Remaining open chunks
+
+Chunk 3.B (extraction of `run_provenance.py`) and Chunks 4 through 12 are
+open.
+
+## 2026-09-02: Tier-3 refactoring — Chunk 3.B: extract `run_provenance.py`
+
+### Objective
+
+Move all seven functions of the provenance pipeline, characterized in
+Chunk 3.A (commit `640e6f7`), out of `python/run_anaFit.py` into a new
+`python/run_provenance.py`, per `doc/TIER3_COMPLETION_PLAN.md` Chunk 3.
+This is the largest extraction by line count so far (227 lines removed
+from the coordinator).
+
+### What changed
+
+- `python/run_provenance.py` created, containing `get_repository_root`,
+  `resolve_analysis_path`, `calculate_file_sha256`, `build_file_provenance`,
+  `get_git_revision`, `collect_scientific_runtime`, and
+  `build_analysis_provenance`, moved verbatim, **with the one narrow
+  exception the plan explicitly sanctions**: `get_repository_root()` now
+  computes its base path via `repo_utils.find_repo_root()` (flat import:
+  `from repo_utils import find_repo_root`) instead of its own independent
+  `Path(__file__).resolve().parents[1]`, then layers the same `.git`
+  existence check and `RuntimeError` on top, unchanged. Both expressions
+  were already identical in value (both files live directly under
+  `python/`), so this removes a real duplication with no behavior change
+  to the function's signature, return value, or exception. Formatted with
+  `python -m black python/run_provenance.py` once added to the Tier 2
+  target list (one whitespace-only change: two adjacent string literals
+  in `get_repository_root`'s error message joined onto one physical line
+  — no logic change, same message text).
+- `collect_scientific_runtime()`'s `import ROOT` moved from
+  `run_anaFit.py`'s module top level to inside the function body itself
+  (Section 4.2's import-placement table) — it is the only one of the
+  seven functions that touches ROOT at all, so every other function in
+  the new module is now plainly importable with zero stubbing.
+- `python/run_anaFit.py`: all seven function definitions removed;
+  replaced with `from run_provenance import build_analysis_provenance`
+  (flat sibling-import style). The one call site inside `run_anaFit()`
+  is unchanged. File size: 847 -> 622 lines (225 lines removed net: 226
+  deleted for the seven function bodies and their spacing, plus 1 added
+  for the new import line).
+- `tests/test_run_provenance.py` created: the 18 relocated test
+  functions (19 cases) plus Chunk 3.A's 2 new gap tests (20 functions, 21
+  cases total), using the plain `from python import run_provenance` style.
+- `scripts/quality_check.py`: added `python/run_provenance.py` to
+  `python_targets` and `tests/test_run_provenance.py` to `test_targets`.
+
+### A real infrastructure gap the acceptance check caught
+
+Running the acceptance check immediately after writing
+`tests/test_run_provenance.py` failed at collection:
+`ModuleNotFoundError: No module named 'repo_utils'`, raised from
+`run_provenance.py`'s own `from repo_utils import find_repo_root` line.
+Cause: `from python import run_provenance` (the plain, no-stubbing import
+style established in Chunks 1-2) only works because `pyproject.toml`'s
+`pythonpath = ["."]` puts the **repository root** on `sys.path`, making
+`python` importable as a namespace package — it never puts `python/`
+itself on `sys.path`. Chunks 1 and 2's new modules (`run_execution.py`,
+`run_manifest.py`) never hit this because neither imports another sibling
+module; `run_provenance.py` is the first new module to import a sibling
+(`repo_utils`) using the same flat style production requires. In
+production this is not a problem — `python/` is `sys.path[0]` for the
+whole process once `run_anaFit.py` is invoked directly, so `run_provenance.py`'s
+own flat import resolves the same way `run_anaFit.py`'s already-flat
+sibling imports do. The gap is purely in how the *test* loads the module.
+
+Fix: added `"python"` to `pyproject.toml`'s `pythonpath` list
+(`pythonpath = [".", "python"]`), so `python/` is on `sys.path` for every
+test in the suite, alongside the repository root. This is a one-line,
+general, forward-looking fix rather than a per-file `sys.path` hack in
+`tests/test_run_provenance.py` alone — the plan's own Chunk 6 already
+anticipates `run_fit.py` needing flat imports from `run_execution.py`
+(the same pattern), so this would have recurred. Re-ran the full
+acceptance check after the fix: collection succeeded, all tests passed.
+
+### Two more Test Relocation Rule exceptions, both anticipated in Chunk 3.A
+
+1. `test_get_repository_root_rejects_missing_git_directory` — the
+   original faked a missing-`.git` directory by patching the loaded
+   module's `__file__` attribute, which only worked because
+   `get_repository_root()` used to compute `Path(__file__)` against its
+   *own* module. Once it delegates to `find_repo_root()` (now living in
+   `repo_utils.py`, with its own separate `__file__`), that patch target
+   no longer reaches anything. Rewritten to patch
+   `run_provenance.find_repo_root` directly (as looked up in
+   `run_provenance`'s own namespace) — same `RuntimeError`/message
+   asserted, simpler fixture (no longer needs to fabricate a nested
+   `python/run_anaFit.py` file, just a directory without `.git`).
+2. `test_collect_scientific_runtime_records_python_and_root` and
+   `test_collect_scientific_runtime_rejects_missing_root_version` — the
+   originals patched `module.ROOT.gROOT`, relying on `run_anaFit.py`'s
+   top-level `import ROOT`. With the import deferred inside the function,
+   there is no module-level `run_provenance.ROOT` attribute to patch —
+   the function does its own local `import ROOT` on every call. Rewritten
+   to install a fake module directly via
+   `monkeypatch.setitem(sys.modules, "ROOT", fake_root_module)` before
+   calling the function, which is exactly what the function's own local
+   `import ROOT` statement finds (Python checks `sys.modules` before
+   doing any real import work). Same assertions, same expected values.
+
+Neither is a hidden behavior change to the function under test — both are
+necessary, transparent consequences of where the code and its ROOT
+dependency now live, exactly as already documented for Chunk 1.B's
+`execute`/`execute_required` monkeypatch-target change.
+
+### No exception needed for the other four relocated functions' cross-calls
+
+`build_analysis_provenance`'s tests patch `get_repository_root`,
+`get_git_revision`, `collect_scientific_runtime`, and
+`build_file_provenance` via `monkeypatch.setattr(run_provenance, ...)` —
+mechanically the same pattern as before (`module.X` -> `run_provenance.X`),
+since all seven functions moved into the *same* new module together and
+call each other exactly as they did inside `run_anaFit.py`. Confirmed by
+running both `build_analysis_provenance` tests unchanged in logic after
+the move: both pass. Likewise, the two coordinator-level tests in
+`tests/test_run_anaFit.py` that patch `module.build_analysis_provenance`
+continue to work unchanged, for the same reason as Chunk 2.B's
+`write_analysis_results`: `run_anaFit()` didn't move, and still resolves
+that name from its own module globals (now bound there via the new
+`from run_provenance import build_analysis_provenance` line).
+
+### Deliberately deferred: three now-dead imports in `run_anaFit.py`
+
+`hashlib` and `platform` (previously used only by `calculate_file_sha256`
+and `collect_scientific_runtime`) and `subprocess` (previously used only
+by `get_git_revision`; its one other appearance in the file is a comment,
+not code — confirmed by `grep -n "\bsubprocess\." python/run_anaFit.py`)
+are now unused in `run_anaFit.py`. Left in place deliberately rather than
+removed as part of this chunk: `run_anaFit.py` is not yet registered in
+`scripts/quality_check.py` (so ruff's unused-import check does not run
+against it today), and Chunk 8 ("Coordinator slimming and
+dependency-direction verification") explicitly exists to re-read the
+coordinator top-to-bottom, register it with the quality gate, and fix
+whatever ruff then finds — bundling this cleanup into Chunk 3.B now would
+widen this chunk's diff beyond "move these seven functions" for a
+one-chunk-early version of Chunk 8's own stated job. Flagged here so
+Chunk 8 does not need to rediscover it.
+
+### Confirm: no scientific behavior changed
+
+Every function's body is byte-for-byte identical to before the move
+(aside from the one Black whitespace-only reformat noted above and the
+sanctioned `find_repo_root()` substitution, which is value-identical).
+Ran the real, authoritative J100/J50 integration gate as supplementary
+verification (not strictly mandatory for Chunk 3 per Section 7, but this
+chunk changes the actual code path that computes `repository_commit` for
+`analysis_results.json`, so extra confidence was warranted, matching the
+same judgment call made for Chunk 1.B): both workflows matched the frozen
+reference exactly.
+
+### Verification performed
+
+- `python -m pytest tests/test_run_provenance.py tests/test_run_anaFit.py -v`
+  → 48 passed (21 cases in `test_run_provenance.py` + 27 remaining in
+  `test_run_anaFit.py` = 48, matching the pre-move total of 48 exactly).
+- `grep -n "^def get_repository_root\|^def resolve_analysis_path\|^def calculate_file_sha256\|^def build_file_provenance\|^def get_git_revision\|^def collect_scientific_runtime\|^def build_analysis_provenance" python/run_anaFit.py`
+  → no output (all seven definitions fully removed).
+- `python scripts/quality_check.py --mode full` → 131 passed, 2
+  deselected; ruff clean; black clean (14 files unchanged after the one
+  reformat above); exit code 0.
+- `python -m pytest tests/test_repo_utils.py -m "requires_analysis_dependencies" -v`
+  → 2 passed, 11 deselected (run because the new module now imports from
+  `repo_utils.py`).
+- `python -m pytest tests/test_analysis_workflows_integration.py -m "integration and requires_root" -v`
+  → 1 passed in 181.04s — the real J100/J50 authoritative pipeline run,
+  matched against the frozen reference exactly.
+- `git diff --check` → passed.
+
+### Compliance review (Section 8, Extraction checklist)
+
+1. Chunk 3, Step B (this entry).
+2. Step A is committed (`640e6f7`) and referenced above.
+3. No scientific constants, references, tolerances, dependency revisions,
+   or canonical workflow arguments touched.
+4. Relocated tests' diffs are import-statement-and-call-site-only for the
+   17 functions with no cross-module dependency change; two genuine
+   exceptions (`find_repo_root` patch target, `sys.modules["ROOT"]`
+   stubbing) documented above as necessary consequences, not hidden
+   behavior changes.
+5. All seven relocated functions are covered by their relocated tests; no
+   new functions were introduced this chunk.
+6. Confirmed by grep: `run_anaFit.py` actually imports and never
+   redefines any of the seven functions.
+7. Only this chunk's six changed/new files were staged (`pyproject.toml`,
+   `python/run_anaFit.py`, `python/run_provenance.py`,
+   `scripts/quality_check.py`, `tests/test_run_anaFit.py`,
+   `tests/test_run_provenance.py`).
+8. All required Section 7 gates ran and passed, plus two supplementary
+   gates (dependency-facing, authoritative integration), output captured
+   above.
+9. `git diff --check` passed.
+10. This activity-log entry appended (not a rewrite of any existing
+    section).
+11. Chunks 4 through 12 remain open, listed below.
+12. No other branch's Tier 3 work was consulted.
+
+### Remaining open chunks
+
+Chunks 4 through 12 in `doc/TIER3_COMPLETION_PLAN.md` are open. Chunk 3
+(both Step A and Step B) is complete and verified.
