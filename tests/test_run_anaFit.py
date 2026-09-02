@@ -28,6 +28,16 @@ def _load_run_anafit_module(
         monkeypatch.setitem(sys.modules, module_name, module)
 
     module_path = Path(__file__).resolve().parents[1] / "python" / "run_anaFit.py"
+
+    # run_anaFit.py imports its extracted sibling modules with flat,
+    # same-directory-style imports (e.g. "from run_execution import
+    # execute"), matching how Python resolves them in production when the
+    # script is invoked directly (its own directory is auto-prepended to
+    # sys.path). Loading the file via importlib does not get that for
+    # free, so it must be added explicitly here, mirroring what the
+    # interpreter already does automatically outside of tests.
+    monkeypatch.syspath_prepend(str(module_path.parent))
+
     spec = importlib.util.spec_from_file_location("run_anaFit_under_test", module_path)
 
     if spec is None or spec.loader is None:
@@ -77,78 +87,6 @@ def test_main_propagates_analysis_status(
     assert result == analysis_status
 
 
-def test_execute_required_accepts_success_with_expected_output(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    module = _load_run_anafit_module(monkeypatch)
-    expected_output = tmp_path / "result.root"
-
-    def create_fresh_output(cmd):
-        expected_output.write_text("fresh result")
-        return 0
-
-    monkeypatch.setattr(module, "execute", create_fresh_output)
-
-    assert module.execute_required(
-        "analysis command",
-        "test analysis",
-        expected_outputs=[str(expected_output)],
-    )
-    assert expected_output.read_text() == "fresh result"
-
-
-def test_execute_required_rejects_stale_expected_output(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    module = _load_run_anafit_module(monkeypatch)
-    expected_output = tmp_path / "result.root"
-    expected_output.write_text("stale result")
-
-    def return_success_without_output(cmd):
-        assert not expected_output.exists()
-        return 0
-
-    monkeypatch.setattr(module, "execute", return_success_without_output)
-
-    assert not module.execute_required(
-        "analysis command",
-        "test analysis",
-        expected_outputs=[str(expected_output)],
-    )
-    assert not expected_output.exists()
-
-
-def test_execute_required_rejects_nonzero_command_status(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    module = _load_run_anafit_module(monkeypatch)
-
-    monkeypatch.setattr(module, "execute", lambda cmd: 7)
-
-    assert not module.execute_required(
-        "analysis command",
-        "test analysis",
-    )
-
-
-def test_execute_required_rejects_missing_expected_output(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    module = _load_run_anafit_module(monkeypatch)
-    missing_output = tmp_path / "missing-result.root"
-
-    monkeypatch.setattr(module, "execute", lambda cmd: 0)
-
-    assert not module.execute_required(
-        "analysis command",
-        "test analysis",
-        expected_outputs=[str(missing_output)],
-    )
-
-
 def test_build_fit_extract_stops_after_xmlreader_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -183,6 +121,7 @@ def test_build_fit_extract_stops_after_quickfit_failure(
 ) -> None:
     module = _load_run_anafit_module(monkeypatch)
     calls: list[str] = []
+    commands: list[str] = []
 
     def execute_required_with_quickfit_failure(
         cmd,
@@ -190,6 +129,7 @@ def test_build_fit_extract_stops_after_quickfit_failure(
         expected_outputs=(),
     ):
         calls.append(description)
+        commands.append(cmd)
         return description != "quickFit background or signal fit"
 
     monkeypatch.setattr(
@@ -216,6 +156,176 @@ def test_build_fit_extract_stops_after_quickfit_failure(
         "XMLReader workspace generation",
         "quickFit background or signal fit",
     ]
+
+    quickfit_command = commands[1]
+    assert " > quickFitLog.log 2>&1" in quickfit_command
+    assert chr(38) + chr(62) not in quickfit_command
+
+
+def test_setup_build_and_fit_propagates_setup_lxplus_failure_and_restores_cwd(
+    tmp_path: Path,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    setup_script = repo_root / "scripts" / "setup_buildAndFit.sh"
+
+    working_directory = tmp_path / "workdir"
+    (working_directory / "xmlAnaWSBuilder").mkdir(parents=True)
+    (working_directory / "quickFit").mkdir(parents=True)
+    # setup_lxplus.sh is always sourced, never executed, so it must fail
+    # via `return` (matching the real xmlAnaWSBuilder/quickFit checkouts'
+    # own setup_lxplus.sh) -- `exit` here would terminate the entire
+    # calling shell instead of just the source operation.
+    (working_directory / "xmlAnaWSBuilder" / "setup_lxplus.sh").write_text(
+        "#!/bin/bash\nreturn 1\n"
+    )
+
+    environment = os.environ.copy()
+    environment.pop("ANAFIT_LCG_PLATFORM", None)
+    environment.pop("_DIRXMLWSBUILDER", None)
+    environment.pop("_DIRFIT", None)
+
+    completed = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f'cd "{working_directory}" && '
+            f'source "{setup_script}"; '
+            'echo "STATUS:$?"; '
+            'echo "CWD:$(pwd)"',
+        ],
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert "STATUS:1" in completed.stdout
+    # The failure must not leave the shell inside xmlAnaWSBuilder/ --
+    # cd back to the pre-source directory is required before returning.
+    assert f"CWD:{working_directory}" in completed.stdout
+
+
+def test_setup_build_and_fit_lcg_platform_branch_exposes_build_directories(
+    tmp_path: Path,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    setup_script = repo_root / "scripts" / "setup_buildAndFit.sh"
+
+    working_directory = tmp_path / "workdir"
+    (working_directory / "xmlAnaWSBuilder" / "build" / "bin").mkdir(parents=True)
+    (working_directory / "xmlAnaWSBuilder" / "build" / "lib").mkdir(parents=True)
+    (working_directory / "xmlAnaWSBuilder" / "lib").mkdir(parents=True)
+    (working_directory / "quickFit" / "build").mkdir(parents=True)
+    (working_directory / "quickFit" / "lib").mkdir(parents=True)
+
+    # ATLAS_LOCAL_ROOT_BASE is hardcoded to a real CVMFS path in
+    # production; overriding it here (now that the script honors an
+    # existing value) lets this test exercise the real
+    # ANAFIT_LCG_PLATFORM branch with a fake ATLAS/lsetup stub instead of
+    # requiring genuine CVMFS/Ubuntu infrastructure.
+    fake_atlas_root = tmp_path / "fake-atlas-root"
+    (fake_atlas_root / "user").mkdir(parents=True)
+    (fake_atlas_root / "user" / "atlasLocalSetup.sh").write_text(
+        "#!/bin/bash\nlsetup() { return 0; }\n"
+    )
+
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "ANAFIT_LCG_PLATFORM": "x86_64-fake-platform",
+            "ATLAS_LOCAL_ROOT_BASE": str(fake_atlas_root),
+        }
+    )
+    for stale_variable in ("_DIRXMLWSBUILDER", "_DIRFIT", "_BIN_PATH", "_LIB_PATH"):
+        environment.pop(stale_variable, None)
+
+    completed = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f'cd "{working_directory}" && '
+            f'source "{setup_script}"; '
+            'echo "STATUS:$?"; '
+            'echo "PATH:$PATH"; '
+            'echo "LD_LIBRARY_PATH:$LD_LIBRARY_PATH"',
+        ],
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert "STATUS:0" in completed.stdout, completed.stdout + completed.stderr
+
+    path_line = next(line for line in completed.stdout.splitlines() if line.startswith("PATH:"))
+    ld_library_path_line = next(
+        line for line in completed.stdout.splitlines() if line.startswith("LD_LIBRARY_PATH:")
+    )
+
+    xml_build_bin = str(working_directory / "xmlAnaWSBuilder" / "build" / "bin")
+    xml_build_lib = str(working_directory / "xmlAnaWSBuilder" / "build" / "lib")
+    xml_lib = str(working_directory / "xmlAnaWSBuilder" / "lib")
+    quickfit_build = str(working_directory / "quickFit" / "build")
+    quickfit_lib = str(working_directory / "quickFit" / "lib")
+
+    assert xml_build_bin in path_line
+    assert quickfit_build in path_line
+    # The pre-fix, nonexistent xmlAnaWSBuilder/bin path must not reappear,
+    # even via a future accidental partial revert.
+    assert str(working_directory / "xmlAnaWSBuilder" / "bin") not in path_line
+
+    assert xml_build_lib in ld_library_path_line
+    assert xml_lib in ld_library_path_line
+    assert quickfit_build in ld_library_path_line
+    assert quickfit_lib in ld_library_path_line
+
+
+@pytest.mark.parametrize(
+    ("launcher_name", "region"),
+    [
+        ("run_anaFit_J100.sh", "J100"),
+        ("run_anaFit_J50.sh", "J50"),
+    ],
+)
+def test_launcher_propagates_setup_failure_before_running_analysis(
+    tmp_path: Path,
+    launcher_name: str,
+    region: str,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    setup_script = tmp_path / "fake-setup.sh"
+    analysis_runner = tmp_path / "fake-analysis-runner.sh"
+    output_dir = tmp_path / "outputs"
+    runner_marker = tmp_path / "runner-called.txt"
+
+    setup_script.write_text("#!/bin/bash\necho 'setup failed' >&2\nexit 7\n")
+    setup_script.chmod(0o755)
+
+    analysis_runner.write_text(f'#!/bin/bash\ntouch "{runner_marker}"\nexit 0\n')
+    analysis_runner.chmod(0o755)
+
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "ANAFIT_OUTPUT_DIR": str(output_dir),
+            "ANAFIT_SETUP_SCRIPT": str(setup_script),
+            "ANAFIT_RUNNER": str(analysis_runner),
+            "FIT_PARS": "six",
+        }
+    )
+
+    completed = subprocess.run(
+        ["bash", str(repo_root / "scripts" / launcher_name)],
+        cwd=repo_root,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 7
+    assert not runner_marker.exists()
+    assert not list(output_dir.rglob("postFit.pdf"))
 
 
 @pytest.mark.parametrize(
@@ -740,18 +850,21 @@ def test_get_git_revision_returns_clean_repository_commit(
     repository = tmp_path / "repository"
     expected_revision = _create_test_git_repository(repository)
 
-    assert module.get_git_revision(repository) == expected_revision
+    revision, dirty = module.get_git_revision(repository)
+    assert revision == expected_revision
+    assert dirty is False
 
 
 @pytest.mark.parametrize("staged", [False, True])
-def test_get_git_revision_rejects_tracked_modifications(
+def test_get_git_revision_warns_for_tracked_modifications(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
     staged: bool,
 ) -> None:
     module = _load_run_anafit_module(monkeypatch)
     repository = tmp_path / "repository"
-    _create_test_git_repository(repository)
+    expected_revision = _create_test_git_repository(repository)
 
     (repository / "tracked.txt").write_text(
         "modified content\n",
@@ -765,11 +878,15 @@ def test_get_git_revision_rejects_tracked_modifications(
             check=True,
         )
 
-    with pytest.raises(
-        RuntimeError,
-        match="repository with tracked modifications",
-    ):
-        module.get_git_revision(repository)
+    revision, dirty = module.get_git_revision(repository)
+    assert revision == expected_revision
+    assert dirty is True
+
+    captured = capsys.readouterr()
+    assert "WARNING: Recording Git revision" in captured.out
+    assert expected_revision in captured.out
+    assert "repository with tracked modifications" in captured.out
+    assert "tracked.txt" in captured.out
 
 
 def test_get_git_revision_ignores_untracked_files(
@@ -785,7 +902,9 @@ def test_get_git_revision_ignores_untracked_files(
         encoding="utf-8",
     )
 
-    assert module.get_git_revision(repository) == expected_revision
+    revision, dirty = module.get_git_revision(repository)
+    assert revision == expected_revision
+    assert dirty is False
 
 
 def test_get_git_revision_rejects_non_repository(
@@ -1014,7 +1133,7 @@ def test_build_analysis_provenance_records_runtime_inputs_tools_and_invocation(
     monkeypatch.setattr(
         module,
         "get_git_revision",
-        lambda path: revisions[Path(path)],
+        lambda path: (revisions[Path(path)], False),
     )
     monkeypatch.setattr(
         module,
@@ -1051,6 +1170,7 @@ def test_build_analysis_provenance_records_runtime_inputs_tools_and_invocation(
 
     assert provenance == {
         "repository_commit": "a" * 40,
+        "repository_dirty": False,
         "runtime": {
             "python_version": "3.9.12",
             "python_executable": "/cvmfs/example/bin/python",
@@ -1093,6 +1213,70 @@ def test_build_analysis_provenance_records_runtime_inputs_tools_and_invocation(
             "prefit_enabled": True,
             "mask_threshold": 0.01,
         },
+    }
+
+
+def test_build_analysis_provenance_records_dirty_repository_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_run_anafit_module(monkeypatch)
+    repository_root = Path("/repository")
+
+    monkeypatch.setattr(
+        module,
+        "get_repository_root",
+        lambda: repository_root,
+    )
+
+    def fake_get_git_revision(path):
+        # Only the main repository is dirty; the four tool checkouts are
+        # clean, confirming their dirty state (discarded via [0] in
+        # production) never leaks into the persisted payload.
+        if Path(path) == repository_root:
+            return "a" * 40, True
+        return "b" * 40, False
+
+    monkeypatch.setattr(module, "get_git_revision", fake_get_git_revision)
+    monkeypatch.setattr(
+        module,
+        "collect_scientific_runtime",
+        lambda: {
+            "python_version": "3.9.12",
+            "python_executable": "/cvmfs/example/bin/python",
+            "root_version": "6.26/08",
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "build_file_provenance",
+        lambda path, repository_root=None: {
+            "path": str(path),
+            "sha256": "f" * 64,
+        },
+    )
+
+    provenance = module.build_analysis_provenance(
+        datafile="Input/data.root",
+        datahist="directory/histogram",
+        topfile="config/top.template",
+        categoryfile="config/category.template",
+        backgroundfile=None,
+        signalfile=None,
+        rangelow=481,
+        rangehigh=3000,
+        dosignal=False,
+        dolimit=False,
+        doprefit=True,
+        maskthreshold=0.01,
+    )
+
+    assert provenance["repository_commit"] == "a" * 40
+    assert provenance["repository_dirty"] is True
+    assert provenance["tool_revisions"] == {
+        "xmlAnaWSBuilder": "b" * 40,
+        "quickFit": "b" * 40,
+        "workspaceCombiner": "b" * 40,
+        "pyBumpHunter": "b" * 40,
     }
 
 

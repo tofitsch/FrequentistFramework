@@ -9,48 +9,8 @@ from pathlib import Path
 from ExtractPostfitFromWS import PostfitExtractor
 from ExtractFitParameters import FitParameterExtractor
 from PreFit import PreFitter
-import subprocess
+from run_execution import execute, execute_required
 import ROOT
-
-def execute(cmd):  
-    print("EXECUTE:", cmd)
-    sys.stdout.flush() # keeps print and subprocess output in sync
-    rtv = subprocess.call(cmd, shell=True)
-    return rtv
-
-
-def execute_required(cmd, description, expected_outputs=()):
-    for output_path in expected_outputs:
-        if os.path.lexists(output_path):
-            os.remove(output_path)
-
-    rtv = execute(cmd)
-
-    if rtv != 0:
-        print(
-            "ERROR: {} failed with exit code {}.".format(
-                description,
-                rtv,
-            )
-        )
-        return False
-
-    missing_outputs = [
-        output_path
-        for output_path in expected_outputs
-        if not os.path.isfile(output_path)
-    ]
-    if missing_outputs:
-        print(
-            "ERROR: {} returned success but did not create required output files:".format(
-                description
-            )
-        )
-        for output_path in missing_outputs:
-            print("  - {}".format(output_path))
-        return False
-
-    return True
 
 
 def load_bumphunter_results(results_file):
@@ -252,13 +212,19 @@ def get_git_revision(repository_path):
             )
         )
 
-    if status.stdout.strip():
-        raise RuntimeError(
-            "Cannot record an unqualified Git revision for a repository "
-            "with tracked modifications: {}".format(repository_path)
-        )
+    dirty = bool(status.stdout.strip())
 
-    return revision
+    if dirty:
+        print(
+            "WARNING: Recording Git revision {} for repository with "
+            "tracked modifications: {}".format(
+                revision,
+                repository_path,
+            )
+        )
+        print(status.stdout.rstrip())
+
+    return revision, dirty
 
 
 def collect_scientific_runtime():
@@ -324,11 +290,19 @@ def build_analysis_provenance(
         ),
     }
 
+    repository_commit, repository_dirty = get_git_revision(repository_root)
+
     return {
-        "repository_commit": get_git_revision(repository_root),
+        "repository_commit": repository_commit,
+        "repository_dirty": repository_dirty,
         "runtime": collect_scientific_runtime(),
         "tool_revisions": {
-            name: get_git_revision(repository_path)
+            # Only the main repository's dirty state is persisted: the pinned
+            # tool checkouts already have a dedicated, always-run tracked-
+            # modification check (test_repo_utils.py::
+            # test_external_dependency_checkouts_have_no_tracked_source_changes),
+            # so duplicating that signal here would be redundant.
+            name: get_git_revision(repository_path)[0]
             for name, repository_path in tool_repositories.items()
         },
         "input": build_file_provenance(
@@ -423,7 +397,7 @@ def build_fit_extract(topfile, datafile, datahist, rangelow, rangehigh, wsfile, 
     edmplot=fitresultfile.replace("FitResult","edm").replace(".root", ".pdf")
 
     #print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! _poi is :"+str(_poi))
-    quickfit_command = "quickFit/build/quickFit --chi2fit 1 --poissonerror 1 -f %s -d combData %s --checkWS 1 --hesse 1 --savefitresult 1 --saveWS 1 --saveNP 1 --saveErrors 1 --minStrat 2 --nllOffset 0 --optConst 2 --GKIntegrator 1 --minTolerance 1E-6 %s -o %s &> %s" % (
+    quickfit_command = "quickFit/build/quickFit --chi2fit 1 --poissonerror 1 -f %s -d combData %s --checkWS 1 --hesse 1 --savefitresult 1 --saveWS 1 --saveNP 1 --saveErrors 1 --minStrat 2 --nllOffset 0 --optConst 2 --GKIntegrator 1 --minTolerance 1E-6 %s -o %s > %s 2>&1" % (
         wsfile,
         _poi,
         _range,

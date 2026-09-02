@@ -2221,3 +2221,1323 @@ Repository state:
 - The working tree remained clean after final scientific verification.
 - Both canonical manifests record source revision 132a8b35e9e3a4042fe55a452c5806514cac8556.
 - All ten GitHub Copilot review findings are resolved and verified.
+
+#### 2026-08-28: GitHub-hosted scientific runtime probe implemented
+
+##### Objective
+
+Begin evaluating whether the authoritative FrequentistFramework scientific runtime can execute on a GitHub-hosted Linux runner before enabling dependency builds or the complete J100/J50 characterization analysis.
+
+##### Changes completed
+
+- Added `.github/workflows/scientific-analysis.yml`.
+- Kept the hosted scientific probe separate from the existing Tier-1 and Tier-2 lightweight quality workflow.
+- Configured manual execution through `workflow_dispatch`.
+- Selected the fixed `ubuntu-24.04` GitHub-hosted runner image.
+- Restricted workflow permissions to read-only repository contents.
+- Added per-branch concurrency control and a 30-minute job timeout.
+- Configured recursive submodule checkout without persisted Git credentials.
+- Added CernVM-FS setup for:
+  - `atlas.cern.ch`;
+  - `sft.cern.ch`.
+- Pinned the CernVM-FS action to immutable commit:
+  - `10197e000cc0add8e54ac4fb73d3ed44e2de72b4`.
+- Added clean-checkout, recursive submodule, and `install.sh --check` validation.
+- Added CernVM-FS repository probes.
+- Added inspection of the hosted operating system, architecture, Python executable, Python version, ROOT version, and PyROOT version.
+- Added execution of the existing scientific runtime-readiness pytest gate.
+- Deliberately excluded dependency compilation and the complete J100/J50 scientific characterization gate from this initial probe.
+
+##### Local verification
+
+- Confirmed that the workflow contains no literal HTML line-break elements.
+- YAML syntax validation passed.
+- `git diff --check` passed.
+- Reviewed the staged workflow diff.
+- The existing lightweight GitHub Actions workflow remains unchanged.
+
+##### Current status
+
+The runtime-probe workflow is implemented locally but has not yet been executed on GitHub Actions. Its first hosted run must determine whether the existing `LCG_102a` `x86_64-centos9-gcc11-opt` scientific environment is compatible with the GitHub-hosted Ubuntu 24.04 runner.
+
+Dependency building, the authoritative J100/J50 scientific characterization gate, caching, scheduled execution, and required-check status remain deferred until the hosted runtime probe passes.
+
+##### Hosted trigger correction
+
+- The initial manual workflow could not be started while it existed only on the feature branch.
+- Added a temporary push trigger limited to `github-actions-analysis`.
+- Retained `workflow_dispatch` for manual execution after the workflow becomes available from the repository default branch.
+- The temporary branch trigger will be removed or revised after the hosted probe has been verified.
+
+##### First hosted probe result and cleanliness-policy adjustment
+
+- GitHub Actions run `33164486810` started successfully from commit `6ca611d51c5a4114c25f86a79ba530d5dbc6bb09`.
+- Recursive checkout completed with all four top-level dependencies at their recorded pinned revisions.
+- CernVM-FS setup completed before repository validation.
+- The job stopped because the CernVM-FS action created an untracked `apt_cache/` directory and the workflow treated any non-clean repository status as fatal.
+- Changed the general repository-cleanliness check from a fatal assertion to a GitHub Actions warning with the detected status printed in the log.
+- Retained recursive submodule reporting and mandatory `install.sh --check` validation.
+- Scientific runtime compatibility remains untested because the first job stopped before the CernVM-FS repository probes and LCG runtime steps.
+
+##### Nested RooFitExtensions acquisition added
+
+- The second hosted probe passed top-level gitlink validation for `xmlAnaWSBuilder`, `quickFit`, `workspaceCombiner`, and `pyBumpHunter`.
+- `install.sh --check` then failed because `xmlAnaWSBuilder/RooFitExtensions` was absent.
+- Confirmed that none of the three parent dependency revisions records `RooFitExtensions` as a Git gitlink.
+- Confirmed that the prepared LXPlus checkouts use the publicly readable repository:
+  - `https://gitlab.cern.ch/atlas_higgs_combination/software/RooFitExtensions.git`
+- Confirmed that the required revision is available:
+  - `ba94bfcbfa4f4a4e3541ade09580399e409e8514`
+- Added a workflow step that acquires separate RooFitExtensions checkouts for `xmlAnaWSBuilder`, `quickFit`, and `workspaceCombiner`.
+- Each checkout is detached at the exact recorded revision and verified before `install.sh --check` runs.
+- Kept acquisition outside `install.sh` so its `--check` mode remains read-only.
+- LCG and ROOT compatibility remain untested because the second hosted run stopped during dependency validation.
+
+##### Scientific setup shell compatibility corrected
+
+- The next hosted probe reached `scripts/setup_buildAndFit.sh`.
+- Scientific setup stopped because the workflow enabled Bash nounset mode and `_DIRXMLWSBUILDER` is intentionally unset before initial environment setup.
+- Changed only the two workflow steps that source the scientific setup script from `set -euo pipefail` to `set -eo pipefail`.
+- Retained immediate command-failure and pipeline-failure handling.
+- Dependency acquisition and validation progressed beyond the previous missing RooFitExtensions failure.
+- LCG and ROOT compatibility remain pending the corrected hosted rerun.
+
+##### ATLAS setup errexit compatibility corrected
+
+- The next hosted probe reached ATLAS local environment setup.
+- `atlasLocalSetup.sh` refused to continue because Bash errexit mode was enabled by the GitHub Actions shell.
+- Updated both scientific setup steps to follow the established `install.sh` pattern:
+  - disable errexit and nounset while sourcing `scripts/setup_buildAndFit.sh`;
+  - capture the setup exit status;
+  - restore errexit;
+  - fail explicitly if scientific environment setup returns a nonzero status.
+- Setup failures remain fatal and are reported through a GitHub Actions error annotation.
+- LCG and ROOT compatibility remain pending the corrected hosted rerun.
+
+##### Ubuntu-compatible LCG platform override added
+
+- The hosted runtime probe established the LCG 102a CentOS 9 view but could not execute its binaries on Ubuntu 24.04.
+- Observed missing host-library failures included:
+  - `libicuuc.so.67`;
+  - `libcrypt.so.2`.
+- Confirmed that CVMFS provides the LCG 102a platform:
+  - `x86_64-ubuntu2204-gcc11-opt`.
+- Added an opt-in `ANAFIT_LCG_PLATFORM` override to `scripts/setup_buildAndFit.sh`.
+- Preserved `x86_64-centos9-gcc11-opt` as the default when the override is unset, retaining the established LXPlus scientific environment.
+- Configured the GitHub-hosted runtime-probe job to use:
+  - `ANAFIT_LCG_PLATFORM=x86_64-ubuntu2204-gcc11-opt`.
+- The override configures the selected LCG view and reproduces the XMLReader and quickFit path and library setup without modifying the pinned dependency checkouts.
+- Shell syntax validation passed.
+- Hosted Python, ROOT, dependency-build, and scientific compatibility with the Ubuntu LCG view remain pending rerun.
+- The frozen J100/J50 references still record the CentOS 9 Python executable path. Hosted provenance comparison must be addressed before enabling the complete characterization gate.
+
+##### Hosted Ubuntu LCG runtime verified and build phase added
+
+- The hosted probe successfully established the Ubuntu-compatible LCG 102a view.
+- Verified scientific runtime:
+  - Python 3.9.12;
+  - ROOT and PyROOT 6.26/08;
+  - Python executable under `x86_64-ubuntu2204-gcc11-opt`.
+- The runtime-readiness test reached its required-artifact checks and failed because the scientific dependencies had not yet been built.
+- The first missing executable was:
+  - `xmlAnaWSBuilder/build/bin/XMLReader`.
+- Added the authoritative non-destructive dependency build command:
+  - `INSTALL_JOBS=2 bash install.sh --build`.
+- Added post-build `install.sh --check` validation.
+- Added the prepared-dependency pytest gate after the build.
+- Increased the hosted job timeout from 30 to 90 minutes.
+- The complete runtime-readiness gate remains pending the first hosted dependency build.
+- A ROOT compiler include-path diagnostic was observed and will be evaluated only if it causes an actual build or runtime failure.
+
+##### Hosted CMake compatibility correction
+
+- The first hosted dependency build established Python 3.9.12 and ROOT 6.26/08 and passed the complete installation-contract check.
+- `xmlAnaWSBuilder/RooFitExtensions` configured and built successfully.
+- ROOT emitted compiler include-path and C++ standard-library mismatch diagnostics, but the RooFitExtensions build completed.
+- The subsequent `xmlAnaWSBuilder` configuration failed because CMake 4.2.1 removed compatibility with projects declaring a minimum CMake version below 3.5.
+- Added `-DCMAKE_POLICY_VERSION_MINIMUM=3.5` to both centralized CMake configuration paths in `install.sh`:
+  - nested RooFitExtensions configuration;
+  - parent C++ dependency configuration.
+- The pinned external dependency sources remain unchanged.
+- Shell syntax validation and `git diff --check` passed.
+- Completion of the three RooFitExtensions builds, parent dependency builds, runtime-readiness gate, and scientific characterization gate remains pending the corrected hosted rerun.
+
+##### Hosted dependency build completed
+
+- The corrected hosted run completed all three nested RooFitExtensions builds and the parent scientific dependency builds.
+- Post-build `install.sh --check` passed with all top-level gitlinks and nested RooFitExtensions revisions verified.
+- The post-build prepared-dependency pytest gate initially used `/usr/bin/python` because GitHub Actions starts each step in a fresh shell.
+- The system Python did not provide pytest.
+- Updated the post-build verification step to restore `scripts/setup_buildAndFit.sh` and validate its status before invoking pytest.
+- The verification step now uses the LCG 102a Python 3.9.12 environment.
+- The prepared-dependency pytest gate and runtime-readiness gate remain pending the corrected rerun.
+
+##### Hosted build and runtime foundation verified
+
+- GitHub Actions run `33168104641` passed at commit:
+  - `eb59c6824fd1fafc1db2175f685a79ef2876a687`.
+- Total workflow duration was 5 minutes 58 seconds.
+- CernVM-FS probes passed for `atlas.cern.ch` and `sft.cern.ch`.
+- Verified hosted scientific runtime:
+  - Python 3.9.12;
+  - ROOT and PyROOT 6.26/08;
+  - LCG platform `x86_64-ubuntu2204-gcc11-opt`.
+- All three RooFitExtensions checkouts were acquired at revision:
+  - `ba94bfcbfa4f4a4e3541ade09580399e409e8514`.
+- All nested RooFitExtensions builds completed.
+- `xmlAnaWSBuilder`, `quickFit`, and `workspaceCombiner` built successfully.
+- The pyBumpHunter environment was created and validated.
+- The complete non-destructive dependency build passed.
+- Prepared-dependency gate:
+  - 2 passed;
+  - 11 deselected;
+  - failures: 0.
+- Scientific runtime-readiness gate:
+  - 1 passed;
+  - 2 deselected;
+  - runtime: 4.13 seconds;
+  - failures: 0.
+- ROOT compiler include-path and C++ standard-library mismatch diagnostics remained non-fatal during the successful build.
+
+##### Authoritative hosted characterization added
+
+- Added execution of the existing authoritative J100/J50 scientific characterization gate after the hosted build and runtime-readiness gates.
+- The workflow invokes:
+  - `tests/test_analysis_workflows_integration.py`;
+  - marker expression `integration and requires_root`.
+- No scientific comparison or provenance validation has been weakened.
+- The first hosted characterization run will determine whether the Ubuntu LCG build reproduces the canonical J100/J50 scientific results.
+- The frozen reference currently records the CentOS 9 LCG Python executable path, so an exact stable-provenance mismatch may occur even if the numerical results reproduce.
+
+##### First hosted J100 characterization failure diagnosed
+
+- The hosted characterization gate reached the real J100 workflow.
+- XMLReader completed and generated the J100 workspace.
+- quickFit was invoked but did not create:
+  - `FitResult_anaFit_sixPar_bkgOnly.root`.
+- The analysis correctly returned a nonzero status and the integration test failed.
+- The failure occurred before manifest generation and frozen-reference comparison.
+- Build and runtime logs showed that the dependencies were compiled with Ubuntu GCC 13.3 while the selected LCG platform is `x86_64-ubuntu2204-gcc11-opt`.
+- ROOT also reported an inability to extract GCC 11 standard-library include paths and a possible C++ standard-library mismatch.
+- Added failure-only diagnostics to the hosted characterization step.
+- On failure, the workflow now prints:
+  - available compiler commands and versions;
+  - all generated quickFit logs;
+  - any generated fit-result and fit-parameter files.
+- The workflow preserves and returns the original characterization failure status.
+- No scientific acceptance or provenance validation was weakened.
+
+##### Hosted compiler toolchain aligned with LCG
+
+- Expanded failure diagnostics confirmed that the Ubuntu 24.04 runner provided GCC and G++ 13.3.0.
+- The selected LCG platform expects the GCC 11 toolchain.
+- `x86_64-linux-gnu-g++-11` was unavailable.
+- The generated quickFit log was empty and no fit-result files were created, indicating failure during early executable or ROOT initialization.
+- Added installation of `gcc-11` and `g++-11` before CernVM-FS setup.
+- Added explicit checks that both installed compilers report major version 11.
+- Added a check that `x86_64-linux-gnu-g++-11` is available.
+- Set the hosted job environment:
+  - `CC=gcc-11`;
+  - `CXX=g++-11`.
+- This aligns dependency compilation with the `x86_64-ubuntu2204-gcc11-opt` LCG platform and provides the compiler executable ROOT attempts to invoke.
+- The authoritative J100/J50 characterization gate remains pending the GCC 11 hosted rerun.
+
+##### Hosted quickFit executable diagnostics expanded
+
+- Installing GCC 11 provided `x86_64-linux-gnu-g++-11`, but the hosted J100 quickFit invocation still exited before producing output.
+- The redirected quickFit log remained empty and no fit-result files were created.
+- Added failure-only diagnostics for:
+  - compilers recorded in each dependency CMake cache;
+  - quickFit executable metadata;
+  - dynamic-library resolution through `ldd`;
+  - a bounded direct `quickFit --help` startup probe;
+  - the direct startup-probe exit status.
+- Existing compiler, quickFit-log, and generated-fit-file diagnostics remain enabled.
+- The characterization gate continues to return its original failing status.
+- No scientific acceptance criteria were changed.
+
+##### Portable quickFit redirection implemented
+
+- Raw Unicode code-point inspection confirmed that the quickFit command used the Bash-specific `&>` redirection operator.
+- The command is executed through `subprocess.call(..., shell=True)`, which uses `/bin/sh` rather than guaranteeing Bash.
+- On the GitHub-hosted Ubuntu runner, `/bin/sh` did not apply the intended combined stdout and stderr redirection.
+- This allowed the shell command to return before the expected quickFit output and log files were created.
+- Replaced the Bash-specific operator with portable POSIX-compatible redirection:
+  - `> quickFitLog.log 2>&1`.
+- Added regression coverage that verifies:
+  - portable stdout and stderr redirection is present;
+  - the Bash-specific combined-redirection operator is absent.
+- Raw code-point inspection verified the resulting redirection characters unambiguously.
+- Focused regression result:
+  - 1 passed;
+  - 47 deselected.
+- Complete `tests/test_run_anaFit.py` result:
+  - 48 passed.
+- Ruff passed for `tests/test_run_anaFit.py`.
+- Black passed for `tests/test_run_anaFit.py` with no changes required.
+- `python/run_anaFit.py` compiled successfully.
+- Six existing invalid-escape `SyntaxWarning` messages remain in legacy code and are unrelated to this correction.
+- The authoritative hosted J100/J50 characterization gate remains pending rerun.
+
+##### Hosted J100/J50 scientific results reproduced
+
+- The portable quickFit redirection correction allowed both authoritative workflows to complete on the GitHub-hosted runner.
+- J100 and J50 created their required fit-result and fit-parameter artifacts.
+- The hosted results reproduced the canonical fit parameters and chi-square p-values.
+- The characterization comparison reached the final provenance check.
+- The only difference was the scientific Python executable path:
+  - LXPlus baseline: `x86_64-centos9-gcc11-opt/bin/python`;
+  - GitHub-hosted runtime: `x86_64-ubuntu2204-gcc11-opt/bin/python`.
+- Python remained version 3.9.12.
+- ROOT and PyROOT remained version 6.26/08.
+- Tool revisions, input hashes, configuration hashes, invocation settings, fit parameters, and p-values matched the frozen reference.
+- Added an explicit allowlist containing only the CentOS 9 and Ubuntu 22.04 LCG 102a Python executable paths.
+- Added `ANAFIT_EXPECTED_PYTHON_EXECUTABLE` support to the integration test.
+- The environment override is rejected unless it exactly matches one of the approved paths.
+- When no override is supplied, the existing frozen CentOS 9 reference remains unchanged.
+- Configured the hosted workflow to select the approved Ubuntu LCG Python executable.
+- Exact comparison of all remaining provenance and scientific values remains unchanged.
+- Ruff and Black passed for the updated integration test.
+- Final hosted characterization verification remains pending rerun.
+
+##### Final GitHub-hosted scientific verification
+
+GitHub Actions run `33173767689` completed successfully.
+
+Complete workflow:
+
+- Status: passed.
+- Total duration: 7 minutes 51 seconds.
+- GitHub-hosted runner: Ubuntu 24.04.
+- Scientific LCG platform: `x86_64-ubuntu2204-gcc11-opt`.
+- Scientific Python: 3.9.12.
+- ROOT and PyROOT: 6.26/08.
+- Compiler: GCC and G++ 11.
+
+The workflow successfully completed:
+
+- recursive checkout of the four pinned top-level dependencies;
+- acquisition of the three pinned RooFitExtensions checkouts;
+- CernVM-FS setup and repository probes;
+- read-only installation-contract validation;
+- non-destructive compilation of RooFitExtensions and the three C++ dependencies;
+- pyBumpHunter environment creation and validation;
+- prepared-dependency verification;
+- scientific runtime-readiness verification;
+- authoritative J100 and J50 workflow execution;
+- required fresh-artifact validation;
+- schema-version-2 provenance validation;
+- frozen scientific-reference comparison.
+
+Authoritative J100/J50 characterization gate:
+
+- 1 passed.
+- 2 deselected.
+- Runtime: 127.70 seconds.
+- Failures: 0.
+- J100 completed successfully.
+- J50 completed successfully.
+- Fit parameters reproduced the frozen reference.
+- Chi-square p-values reproduced the frozen reference.
+- Tool revisions, input hashes, configuration hashes, and invocation settings matched.
+- The approved Ubuntu LCG Python executable was recorded and validated.
+
+##### Completion status
+
+The GitHub-hosted scientific analysis workflow is operational and passing. It provides clean hosted dependency acquisition, non-destructive dependency building, runtime verification, and complete J100/J50 scientific characterization.
+
+The existing lightweight Python 3.12 quality workflow remains separate and unchanged.
+
+The branch-specific push trigger remains temporary while the workflow is under review. Before final integration, review whether to retain manual execution only, add scheduled execution, or run the hosted scientific gate for selected trusted branch changes.
+
+##### Single complete hosted test job implemented
+
+- Expanded the passing GitHub-hosted scientific workflow into one complete test job.
+- Renamed the workflow to:
+  - `Complete hosted analysis test suite`.
+- Renamed the job to:
+  - `Complete lightweight and scientific test suite`.
+- Added the locked development environment to the beginning of the same job:
+  - Python 3.12.13;
+  - dependencies from `requirements-dev-lock.txt`.
+- Added the authoritative complete lightweight quality gate:
+  - `python scripts/quality_check.py --mode full`.
+- The single job now runs, in sequence:
+  - the complete lightweight pytest suite;
+  - Ruff;
+  - Black;
+  - scientific dependency acquisition;
+  - installation-contract validation;
+  - non-destructive scientific dependency building;
+  - the prepared-dependency pytest gate;
+  - the scientific runtime-readiness pytest gate;
+  - the authoritative J100/J50 characterization pytest gate.
+- The development and scientific Python environments remain separated within the job.
+- The scientific steps continue to restore LCG 102a Python 3.9.12 and ROOT 6.26/08 explicitly.
+- The workflow remains automatic for pushes to `github-actions-analysis` and can also be invoked manually.
+- YAML syntax validation and `git diff --check` passed.
+- Final execution of the expanded single job remains pending.
+
+##### Tracked repository modifications changed from fatal to warning
+
+- Changed scientific Git provenance collection so staged or unstaged tracked modifications no longer stop the analysis.
+- `get_git_revision()` now:
+  - determines the current full Git revision;
+  - checks for tracked modifications;
+  - prints a warning when tracked modifications are present;
+  - prints the tracked Git status;
+  - returns the current revision so the analysis can continue.
+- Untracked files remain permitted as before.
+- Failures to determine the Git revision or inspect repository status remain fatal.
+- The manifest continues to record the current 40-character repository commit.
+- A warning indicates that the recorded commit does not fully describe the modified working tree.
+- Updated regression coverage for both staged and unstaged tracked modifications.
+- Focused regression result:
+  - 2 passed;
+  - 46 deselected.
+- Complete `tests/test_run_anaFit.py` result:
+  - 48 passed.
+- Ruff passed for `tests/test_run_anaFit.py`.
+- Black passed for `tests/test_run_anaFit.py`.
+- `python/run_anaFit.py` compiled successfully.
+- Six existing invalid-escape `SyntaxWarning` messages remain in legacy code and are unrelated to this change.
+- Hosted verification of the revised provenance behavior remains pending.
+
+##### README installation and validation instructions corrected
+
+- Replaced the unsafe sourced installer command:
+  - `. install.sh`
+- Documented the supported non-destructive build command:
+  - `bash install.sh --build`
+- Added an explicit warning that sourcing `install.sh` can terminate the active shell when the installer reaches an `exit` command.
+- Reformatted the installation, setup, run, file, and validation instructions as structured Markdown.
+- Replaced the outdated quality-check description with the current Tier 1 and Tier 2 validation model.
+- Documented the locked Python development-environment setup.
+- Documented the authoritative complete lightweight quality command:
+  - `python scripts/quality_check.py --mode full`
+- Added links to:
+  - `doc/TIER1_SYSTEM.md`;
+  - `doc/TIER2_SYSTEM.md`;
+  - `doc/TIER1_ENVIRONMENT_PROVENANCE.md`.
+- `git diff --check` passed.
+
+#### 2026-09-01: GitHub-hosted analysis branch merged into tier-2-m365
+
+##### Merge completed
+
+- Merged `github-actions-analysis` into `tier-2-m365` using an explicit merge commit.
+- The merge completed without conflicts.
+- The merged change set includes:
+  - the complete GitHub-hosted lightweight and scientific test workflow;
+  - CVMFS and Ubuntu-compatible LCG 102a setup;
+  - hosted dependency acquisition and non-destructive building;
+  - GCC 11 and CMake 4 compatibility;
+  - portable quickFit output redirection;
+  - approved cross-platform runtime provenance;
+  - warning-only handling for tracked repository modifications;
+  - updated installation and validation documentation;
+  - associated regression tests and activity-log evidence.
+
+##### Post-merge lightweight verification
+
+Command: `python scripts/quality_check.py --mode full`
+
+Result:
+
+- Tests collected: 122.
+- Tests selected: 120.
+- Tests passed: 120.
+- Prepared-dependency tests deselected: 2.
+- Unexpected failures: 0.
+- Ruff: passed.
+- Black: passed.
+- Black files unchanged: 8.
+- Existing legacy `SyntaxWarning` messages: 6.
+
+##### Current status
+
+The local `tier-2-m365` branch contains the verified merge and is ahead of `origin/tier-2-m365`. The merged target branch has not yet been pushed.
+
+## 2026-09-02: Tier-3 pre-flight baseline (Chunk 0)
+
+### Objective
+
+Begin executing `doc/TIER3_COMPLETION_PLAN.md`. Per the plan's Chunk 0,
+prove the branch is in the fully-passing state the plan's Section 2
+baseline claims before any Tier 3 extraction PR is opened, so any later
+gate failure can be attributed to a Tier 3 change and not to a
+pre-existing condition.
+
+### Branch
+
+- Created `tier-3-completion` from `tier-3-claude` at commit `5cb6a32`
+  (`updated workflow to current branch`).
+- Committed `doc/TIER3_COMPLETION_PLAN.md` as `3f025cc` (`Add Tier 3
+  completion plan`) — the plan document only; no production code changed.
+- Two pre-existing, unrelated local modifications carried over from
+  `tier-3-claude` (`.github/workflows/scientific-analysis.yml`,
+  `.github/workflows/tier1-root-comparison.yml`) remain uncommitted and
+  untouched; they are out of Tier 3 scope and were not staged.
+
+### Pre-change state
+
+Per the plan's Section 2 baseline: Tier 1 and Tier 2 are complete and
+verified on this branch's ancestry; `python/run_anaFit.py` is still a
+single 901-line module; no Tier 3 extraction has begun.
+
+### Verification performed
+
+All three gates from `doc/TIER3_COMPLETION_PLAN.md` Section 7, run with
+nothing else staged, at commit `3f025cc`:
+
+1. `python scripts/quality_check.py --mode full`
+   - Tests collected: 122; selected: 120; passed: 120; prepared-dependency
+     tests deselected: 2; unexpected failures: 0.
+   - Ruff: passed. Black: passed (8 files unchanged).
+   - Six pre-existing legacy `SyntaxWarning` messages in `run_anaFit.py`
+     (invalid escape sequences), unrelated to this baseline, unchanged
+     from prior entries.
+   - Exit code: 0.
+
+2. `python -m pytest tests/test_repo_utils.py -m "requires_analysis_dependencies" -v`
+   - 2 passed, 11 deselected.
+   - Exit code: 0.
+
+3. `python -m pytest tests/test_analysis_workflows_integration.py -m "integration and requires_root" -v`
+   - Real authoritative J100/J50 rerun from fresh isolated output
+     directories, fresh schema-version-2 manifests, tolerance-aware
+     frozen-reference comparison.
+   - 1 passed, 2 deselected, runtime 126.12s.
+   - Exit code: 0.
+
+- `git status -sb`: only the two pre-existing, unrelated workflow-file
+  modifications noted above; no untracked artifacts left by test
+  execution.
+- `git diff --check`: passed (exit 0).
+
+### Current status
+
+The Chunk 0 baseline is established and fully passing. `tier-3-completion`
+is ready for Chunk 1 (`run_execution.py`) PR A (characterization tests for
+`execute`/`execute_required`, no production-code changes) per
+`doc/TIER3_COMPLETION_PLAN.md`.
+
+### Remaining open chunks
+
+All of Chunks 1 through 12 in `doc/TIER3_COMPLETION_PLAN.md` are open.
+None has started.
+
+## 2026-09-02: Tier-3 refactoring — Chunk 1.A: characterization tests for `execute`/`execute_required`
+
+### Objective
+
+Pin down the current, unmodified behavior of `execute()` and
+`execute_required()` in `python/run_anaFit.py` before extracting them into
+`run_execution.py`, per `doc/TIER3_COMPLETION_PLAN.md` Chunk 1.
+
+### Pre-change state
+
+`execute_required()` already had four direct tests
+(`test_execute_required_accepts_success_with_expected_output`,
+`test_execute_required_rejects_stale_expected_output`,
+`test_execute_required_rejects_nonzero_command_status`,
+`test_execute_required_rejects_missing_expected_output`), but every one of
+them replaces `execute` itself via `monkeypatch.setattr(module, "execute",
+...)` before calling anything. `execute()` — the function that actually
+prints `"EXECUTE: {cmd}"` and calls `subprocess.call(cmd, shell=True)` —
+had never been called for real by any existing test.
+
+### Target functions — inputs and outputs (as they exist today)
+
+| Function | Inputs | Outputs | Side effects |
+|---|---|---|---|
+| `execute(cmd)` | `cmd: str` | `int` (subprocess return code) | runs `cmd` via `subprocess.call(shell=True)`; prints `"EXECUTE: {cmd}"` |
+| `execute_required(cmd, description, expected_outputs=())` | `cmd: str`, `description: str`, `expected_outputs: Sequence[str]` | `bool` | deletes any pre-existing `expected_outputs` before running; prints error diagnostics on failure |
+
+### Tests added
+
+- `test_execute_returns_the_real_subprocess_return_code` — calls the real
+  `execute()` with `"exit 0"` and `"exit 3"`, asserts the return value is
+  the shell's actual exit code both times (not a boolean or a hardcoded
+  value).
+- `test_execute_prints_the_command_before_running_it` — calls the real
+  `execute("echo hello")` with `capsys` capturing stdout, asserts both
+  `"EXECUTE: echo hello"` (the function's own print) and `"hello"` (the
+  child process's own output) are present, proving a real subprocess ran.
+
+### What this PR does NOT do
+
+No production file was modified. `git diff --stat -- python/run_anaFit.py`
+was empty throughout this change — only `tests/test_run_anaFit.py` was
+touched.
+
+### Verification performed
+
+- `python -m pytest tests/test_run_anaFit.py -k execute -v` → 6 passed
+  (the 4 existing `execute_required` tests plus the 2 new `execute`
+  tests).
+- `python -m pytest tests/test_run_anaFit.py -q` → 50 passed (full-file
+  regression check).
+- `python -m ruff check tests/test_run_anaFit.py` → passed.
+- `python -m black --check tests/test_run_anaFit.py` → passed, unchanged.
+- `git diff --stat -- python/run_anaFit.py` → empty.
+- A manual, uncaptured replay of the same three `execute()` calls
+  (`exit 0`, `exit 3`, `echo hello`) was run directly against the loaded
+  module to trace exactly what each assertion checks, independent of
+  pytest's own output capturing.
+
+### Compliance review (Section 8, Characterization checklist)
+
+1. Base commit for these tests: `365460e` (Chunk 0 baseline) — matches the
+   file's state at the time the tests were written; `run_anaFit.py` was
+   not touched afterward either.
+2. Every new test asserts a real output/side-effect (return-code
+   passthrough for two distinct exit codes; two distinct printed strings),
+   not just "no exception."
+3. `git diff --stat` shows no production file touched.
+4. Tests were run and read by the user (repository owner), not only
+   reported passing by the author.
+5. Human-verification checkpoint: confirmed by the user in this session
+   ("i agree lets continue") after reviewing the test code, the manual
+   trace of `execute()`'s real output, and a full line-by-line walkthrough
+   of both new tests and the shared `_load_run_anafit_module` helper.
+
+### Remaining open chunks
+
+Chunk 1.B (extraction of `run_execution.py`) and Chunks 2 through 12 are
+open.
+
+## 2026-09-02: Tier-3 refactoring — Chunk 1.B: extract `run_execution.py`
+
+### Objective
+
+Move `execute()` and `execute_required()`, characterized in Chunk 1.A
+(commit `7029a46`), out of `python/run_anaFit.py` into a new
+`python/run_execution.py`, per `doc/TIER3_COMPLETION_PLAN.md` Chunk 1.
+
+### What changed
+
+- `python/run_execution.py` created, containing `execute()` and
+  `execute_required()` moved verbatim from `python/run_anaFit.py`
+  (identical bodies; only the `os`/`subprocess`/`sys` imports they
+  actually need were added at module top level), then formatted with
+  `python -m black python/run_execution.py` once it was added to the
+  Tier 2 target list (one whitespace-only change: a list comprehension
+  collapsed to one line — no logic change).
+- `python/run_anaFit.py`: the two function definitions removed; replaced
+  with `from run_execution import execute, execute_required` (flat
+  sibling-import style, matching the file's existing
+  `from ExtractPostfitFromWS import PostfitExtractor`-style imports and
+  how Python resolves imports when the script is run directly in
+  production). Every existing call site (`execute_required(...)` in the
+  XMLReader/quickFit/BumpHunter paths, `execute(...)` for the `.dtd`
+  symlink, `plot_edm.py`, the resolution-binning generator, and the
+  `quickLimit` call) is unchanged — only the definitions moved, not the
+  call sites.
+- `tests/test_run_anaFit.py`: added a blocking prerequisite fix to
+  `_load_run_anafit_module` — `monkeypatch.syspath_prepend(str(module_path.parent))`
+  before `exec_module`, so the file can resolve `run_anaFit.py`'s new
+  `from run_execution import ...` line the same way Python's interpreter
+  already does automatically in production (the script's own directory is
+  auto-added to `sys.path` when run directly; loading via
+  `importlib.util.spec_from_file_location` does not get that for free).
+  Confirmed this was in fact required: adding the import before this fix
+  reproduced the exact `ModuleNotFoundError` the plan predicted.
+- `tests/test_run_execution.py` created: the six relocated tests, using
+  the plain `from python import run_execution` style (no `ROOT`/sibling
+  stubbing needed — this module touches neither).
+- `scripts/quality_check.py`: added `python/run_execution.py` to
+  `python_targets` and `tests/test_run_execution.py` to `test_targets`.
+
+### A real integration issue the acceptance check caught
+
+Relocating the tests was not a purely mechanical import-line swap. The
+four original `execute_required` tests patch `execute` via
+`monkeypatch.setattr(module, "execute", fake)`, where `module` was the
+loaded `run_anaFit` module. Before this chunk, `execute_required` and
+`execute` were defined in the *same* module, so patching `execute` there
+correctly intercepted `execute_required`'s internal call. After the move,
+`execute_required` lives in `run_execution.py` and looks up `execute` in
+*that* module's own globals — patching the old location (`module.execute`
+on the loaded `run_anaFit` object) no longer reaches it. Running the tests
+immediately after moving the code (before relocating the tests) reproduced
+this exactly: `test_execute_required_accepts_success_with_expected_output`
+failed with `/bin/sh: line 1: analysis: command not found` (exit 127),
+because `execute_required` was calling the real, unpatched `execute`. The
+relocated tests in `tests/test_run_execution.py` patch
+`run_execution.execute` directly instead — the correct target now that
+both functions share that module's namespace — and all six pass. This
+required changing more than the Test Relocation Rule's "import statement
+only" baseline (the monkeypatch *target* and the direct-call *receiver*
+also changed from `module.X` to `run_execution.X`), but no assertion,
+fixture value, or expected outcome was altered — the correction is a
+necessary consequence of the functions changing which module's namespace
+they live in, not a hidden behavior change.
+
+### Confirm: no scientific behavior changed
+
+`execute()`/`execute_required()`'s bodies are byte-for-byte identical to
+before the move (aside from Black's one whitespace-only reformat, applied
+after the move). Every call site in `run_anaFit.py` is untouched.
+
+### Verification performed
+
+- `python -m pytest tests/test_run_execution.py tests/test_run_anaFit.py -v`
+  → 6 + 44 = 50 passed (same total as before the move: the six execute
+  tests moved out of `test_run_anaFit.py`, into `test_run_execution.py`,
+  net count unchanged).
+- `grep -n "^def execute\b\|^def execute_required\b" python/run_anaFit.py`
+  → no output (definitions fully removed).
+- `python scripts/quality_check.py --mode full` → 122 passed, 2
+  deselected; Ruff passed; Black passed (after the one-file reformat
+  above); exit code 0.
+- `python -m pytest tests/test_repo_utils.py -m "requires_analysis_dependencies" -v`
+  → 2 passed, 11 deselected.
+- `git status -sb` → only this chunk's five changed/new files, plus the
+  two pre-existing unrelated workflow-file modifications carried over
+  since Chunk 0.
+- `git diff --check` → passed.
+- No integration-gate rerun performed for this chunk — Chunk 1 does not
+  touch a real branch condition or template-generation logic (unlike
+  Chunks 4, 5, 8, where it is mandatory), only relocates two
+  already-isolated pure functions.
+
+### Compliance review (Section 8, Extraction checklist)
+
+1. Chunk 1, PR B (this entry).
+2. PR A is merged (`7029a46`) and referenced above.
+3. No scientific constants, references, tolerances, dependency revisions,
+   or canonical workflow arguments touched.
+4. Relocated tests' diffs are not import-line-only, as noted above — the
+   monkeypatch target and call receiver also changed, explicitly because
+   the code moved between module namespaces; no assertion or expected
+   value changed.
+5. New/moved functions are all covered (relocated tests + no new
+   functions were introduced this chunk).
+6. Confirmed by grep: `run_anaFit.py` actually imports and never
+   redefines `execute`/`execute_required`.
+7. Only the six intended files were staged for this chunk (the two
+   pre-existing workflow-file diffs remain unstaged, not part of this
+   commit).
+8. All required Section 7 gates ran and passed, output captured above.
+9. `git diff --check` passed.
+10. This activity-log entry appended (not a rewrite of any existing
+    section).
+11. Chunks 2 through 12 remain open, listed below.
+12. No other branch's Tier 3 work was consulted.
+
+### Remaining open chunks
+
+Chunks 2 through 12 in `doc/TIER3_COMPLETION_PLAN.md` are open. Chunk 1
+(both PR A and PR B) is complete and verified.
+
+## 2026-09-02: Chunk 1.B supplementary verification — authoritative J100/J50 gate
+
+### Objective
+
+`doc/TIER3_COMPLETION_PLAN.md` Section 7 does not list the integration
+gate as mandatory for Chunk 1 (only Chunks 4, 5, 8, and before 12). At the
+user's explicit request, run it anyway after Chunk 1.B (commit `c68585b`)
+as extra confidence, since real production code did change — including
+the exact import mechanism (`from run_execution import execute,
+execute_required`) that only gets exercised for real when the launcher
+scripts invoke `run_anaFit.py` directly as a script, not through the test
+suite's simulated `sys.path` fix.
+
+### Verification performed
+
+Command: `python -m pytest tests/test_analysis_workflows_integration.py -m "integration and requires_root" -v`
+
+Result:
+
+- 1 passed, 2 deselected.
+- Runtime: 168.02s.
+- Both J100 and J50 reran from fresh isolated output directories using
+  the real authoritative launcher scripts.
+- Fresh schema-version-2 manifests generated and validated.
+- Fit parameters and chi-square p-values matched the frozen reference
+  within the established tolerances.
+- Exit code: 0.
+
+`git status -sb` after the run: only the two pre-existing, unrelated
+workflow-file modifications carried since Chunk 0; no untracked artifacts
+left by the run. `git diff --check`: passed.
+
+### Current status
+
+Chunk 1's extraction is now confirmed both by the fast unit-test gate
+(recorded in the Chunk 1.B entry above) and by a real end-to-end rerun of
+the actual production launcher scripts — the new module boundary and
+import mechanism work correctly outside the test harness, not only inside
+it. No scientific result changed.
+
+## 2026-09-02: Housekeeping — remove duplicate `subprocess` import in `python/run_anaFit.py`
+
+### Objective
+
+Fix a pre-existing duplicate import identified by the user during review
+of Chunk 1.B: `python/run_anaFit.py` imported `subprocess` twice — once as
+part of the combined `import os,sys,re,argparse,subprocess,shutil` line,
+and again as a standalone `import subprocess` line immediately before
+`import ROOT`. This predates Tier 3 (present in the original,
+unmodified file); Chunk 1.B's edit happened to touch the surrounding
+lines (replacing the old `execute`/`execute_required` definitions with
+`from run_execution import execute, execute_required`) without removing
+the pre-existing duplicate.
+
+### Change
+
+Removed the standalone `import subprocess` line. The combined import on
+line 4 already provides it; `subprocess.run(...)` (used in
+`get_git_revision`, two call sites) is otherwise unaffected. Zero
+behavior change — Python treats a duplicate `import` as a harmless no-op,
+so this is a pure readability fix, not a bug fix.
+
+### Verification performed
+
+- `python -m py_compile python/run_anaFit.py` → compiles (only the six
+  pre-existing, unrelated legacy `SyntaxWarning` messages remain).
+- `grep -n "^import subprocess\|subprocess\."` confirms exactly one
+  import and both existing `subprocess.run(...)` call sites unchanged.
+- `python -m pytest tests/test_run_anaFit.py tests/test_run_execution.py -q`
+  → 50 passed.
+- `python scripts/quality_check.py --mode full` → 122 passed, 2
+  deselected, Ruff/Black clean, exit code 0.
+- `python -m pytest tests/test_analysis_workflows_integration.py -m "integration and requires_root" -v`
+  → 1 passed, 164.10s, frozen reference reproduced exactly.
+- `git status -sb` → only `python/run_anaFit.py` touched (1 line
+  removed); `git diff --check` passed.
+
+### Current status
+
+This is a standalone housekeeping fix, not tied to a specific
+`doc/TIER3_COMPLETION_PLAN.md` chunk. All chunk status is unchanged:
+Chunks 2 through 12 remain open.
+
+## 2026-09-02: Persist repository dirty state in schema-version-2 provenance (code + tests)
+
+### Objective
+
+Address a GitHub Copilot review finding on `python/run_anaFit.py`'s
+`get_git_revision()`: when the main repository has tracked modifications,
+the function prints a console warning and continues, but
+`analysis_results.json` still records only `repository_commit`, with no
+persisted, machine-verifiable indication that the tree was dirty at
+generation time. Once the warning scrolls off, a manifest looks like a
+clean, fully-provenance-tracked result even when it wasn't.
+
+This is not new: an earlier Copilot review (2026-08-27, "Copilot
+merge-review safety corrections") made dirty tracked trees **fatal**; that
+was deliberately relaxed to a warning-only path the same day
+("Tracked repository modifications changed from fatal to warning") to
+avoid blocking the hosted CI environment. Copilot is now correctly
+pointing out that the warning-only path never actually fixed the
+underlying provenance-integrity gap it was already known to create — it
+only stopped it from being fatal. This change resolves that gap properly:
+keep the analysis non-fatal on a dirty tree (preserving the CI
+compatibility the 2026-08-27 relaxation was for), but persist the dirty
+state as a first-class, validated field in the manifest.
+
+### Scope decision: main repository only, not the four pinned tool checkouts
+
+`get_git_revision()` is also called for `xmlAnaWSBuilder`, `quickFit`,
+`workspaceCombiner`, and `pyBumpHunter`. Their dirty state is **not**
+added to the provenance schema, because it is already covered by an
+existing, dedicated, always-run check:
+`tests/test_repo_utils.py::test_external_dependency_checkouts_have_no_tracked_source_changes`
+(part of the `requires_analysis_dependencies` gate). Duplicating that
+signal inside the provenance payload would be redundant. `tool_revisions`
+therefore keeps its existing shape (`dict[str, str]`) unchanged.
+
+### Changes completed
+
+- `python/run_anaFit.py`:
+  - `get_git_revision()` now returns `(revision, dirty)` instead of just
+    `revision`. The warning-and-continue behavior is unchanged; `dirty`
+    is simply the boolean the function already computed to decide whether
+    to print the warning.
+  - `build_analysis_provenance()` unpacks the main repository's
+    `(repository_commit, repository_dirty)` and adds `repository_dirty`
+    as a new top-level key in the returned payload. The four tool-checkout
+    calls now take `get_git_revision(path)[0]`, discarding their dirty
+    flag per the scope decision above.
+- `python/analysis_reference.py`:
+  - `_validate_analysis_provenance()`: `repository_dirty` added to
+    `required_keys` and validated as a boolean.
+  - `_build_workflow_payload()`: `repository_dirty` is popped from the
+    "stable" provenance used for the frozen-reference comparison,
+    alongside the existing `repository_commit` pop — same
+    self-referential-identity reasoning: both fields describe the specific
+    run instance, not the scientific result, so neither belongs in a
+    cross-run/cross-environment comparison. **This means the frozen
+    reference (`tests/references/analysis_reference.json`) requires no
+    change** — it never included `repository_commit` and correspondingly
+    never includes `repository_dirty`.
+- `tests/test_run_anaFit.py`:
+  - Updated `test_get_git_revision_returns_clean_repository_commit`,
+    `test_get_git_revision_warns_for_tracked_modifications` (both
+    parametrized cases), and `test_get_git_revision_ignores_untracked_files`
+    to unpack the new `(revision, dirty)` return value and assert the
+    correct `dirty` boolean for each case (clean, staged/unstaged dirty,
+    untracked-only).
+  - Updated `test_build_analysis_provenance_records_runtime_inputs_tools_and_invocation`'s
+    stub and expected payload to include `repository_dirty: False`.
+  - Added `test_build_analysis_provenance_records_dirty_repository_state`:
+    asserts that when the main repository is dirty but all four tool
+    checkouts are clean, the payload records `repository_dirty: True`
+    while `tool_revisions` correctly contains only revision strings with
+    no leaked dirty state.
+- `tests/test_analysis_reference.py`:
+  - `_valid_analysis_provenance()` fixture updated with
+    `"repository_dirty": False`.
+  - `test_analysis_reference_comparison_rejects_provenance_drift` updated
+    to pop `repository_dirty` alongside `repository_commit` from both
+    sides, matching the production exclusion above.
+  - `test_validate_analysis_provenance_accepts_complete_payload` asserts
+    `repository_dirty is False`.
+  - `test_validate_analysis_provenance_rejects_invalid_payload` gained a
+    new parametrized case: a non-boolean `repository_dirty` value is
+    rejected with `"repository_dirty must be boolean"`.
+
+### Known, expected, temporary failure at this exact commit
+
+`tests/test_analysis_reference.py::test_analysis_reference_matches_frozen_output`
+calls `build_analysis_reference()` with no `repo_root` override, i.e.
+against the **real, tracked** `run/fits/J100/.../analysis_results.json`
+and `run/fits/J50/.../analysis_results.json` files. Those files were
+generated by the pre-change code and do not yet have `repository_dirty`,
+so `_validate_analysis_provenance()` now correctly rejects them as missing
+a required key. This is the exact ordering problem the 2026-08-21
+schema-version-2 rollout and the 2026-08-27 "Canonical manifest provenance
+corrected" entry already hit and solved the same way: commit the code
+first, then regenerate the two canonical manifests from that clean commit,
+then commit the regenerated manifests separately. That regeneration is the
+immediately following activity-log entry, not deferred.
+
+### Verification performed
+
+- `python -m py_compile python/run_anaFit.py python/analysis_reference.py`
+  → compiles (same six pre-existing, unrelated legacy `SyntaxWarning`
+  messages).
+- `python -m pytest tests/test_run_anaFit.py -k "git_revision or build_analysis_provenance" -v`
+  → 7 passed.
+- `python -m pytest tests/test_run_anaFit.py -q` → 45 passed (44 + 1 new
+  test).
+- `python -m pytest tests/test_analysis_reference.py -v` → **44 passed, 1
+  failed** (`test_analysis_reference_matches_frozen_output`, explained
+  above — every other test, including the four new/updated provenance
+  validation cases, passes).
+- `python scripts/quality_check.py --mode full` → **123 passed, 1 failed,
+  2 deselected**, same single expected failure; Ruff and Black were run
+  separately against every touched file
+  (`python/run_execution.py`, `tests/test_run_execution.py`,
+  `tests/test_run_anaFit.py`, `python/analysis_reference.py`,
+  `tests/test_analysis_reference.py`) since the gate's own Ruff/Black
+  steps don't run after a pytest failure: both passed, no changes needed.
+- `git diff --check` → passed.
+- No integration-gate rerun yet — it is run as part of manifest
+  regeneration in the next entry, since that rerun *is* the regeneration.
+
+### Remaining open work
+
+Regenerate and commit the two canonical manifests (immediately following
+entry). Until that lands, `quality_check.py --mode full` is expected to
+show exactly the one failure described above — this is not an unrelated
+regression if seen at this specific commit.
+
+## 2026-09-02: Canonical manifest provenance regenerated for repository_dirty
+
+### Objective
+
+Resolve the known, expected failure left by the previous entry
+(`test_analysis_reference_matches_frozen_output`) by regenerating the two
+canonical J100/J50 manifests from the clean commit that introduced
+`repository_dirty` (`a83e888`), matching the established
+2026-08-27 "Canonical manifest provenance corrected" precedent for this
+exact kind of schema change.
+
+### Procedure
+
+- Confirmed the working tree was clean at commit `a83e888` before
+  execution (`git status -sb`).
+- Ran both authoritative launchers into a fresh, isolated temporary output
+  root (`ANAFIT_OUTPUT_DIR`), with `ANAFIT_SKIP_PLOTS=1`:
+  - `bash scripts/run_anaFit_J100.sh` — completed successfully, 2m1s,
+    `p(chi2)=0.018` printed.
+  - `bash scripts/run_anaFit_J50.sh` — completed successfully, 1m36s,
+    `p(chi2)=0.079` printed.
+- Inspected both fresh `analysis_results.json` manifests before promoting
+  them: both recorded `"repository_commit": "a83e888c59bb..."` (exact
+  match for the commit used), `"repository_dirty": false` (correctly
+  clean), `p_chi2` values exactly matching the frozen reference
+  (`0.018448750724012808` and `0.07853114301666252`), and every other
+  provenance field (tool revisions, input/configuration hashes,
+  invocation settings) unchanged from the previously committed manifests.
+- Copied only the two regenerated `analysis_results.json` files into their
+  canonical tracked locations, overwriting the previous ones. No other
+  tracked scientific artifact was touched. Confirmed via `git diff
+  --stat`: exactly 2 files, 3 lines each
+  (`repository_commit` value changed, `repository_dirty` line added).
+
+### Verification performed
+
+- `python scripts/quality_check.py --mode full` → **124 passed, 2
+  deselected**, exit code 0 (the previously-failing test now passes).
+- `python -m pytest tests/test_analysis_workflows_integration.py -m "integration and requires_root" -v`
+  → 1 passed, 190.39s. Both J100 and J50 reran from fresh isolated
+  outputs a second time (independent of the regeneration run above) and
+  matched the frozen reference within tolerance — confirming the
+  regenerated canonical manifests are consistent with a completely
+  independent fresh run, not just self-consistent with themselves.
+- `python -m pytest tests/test_repo_utils.py -m "requires_analysis_dependencies" -v`
+  → 2 passed, 11 deselected.
+- `git status -sb` → only the two manifest files; no untracked artifacts.
+- `git diff --check` → passed.
+
+### Current status
+
+The Copilot-flagged provenance gap is fully resolved and verified:
+`analysis_results.json` now persists a validated, machine-checkable
+`repository_dirty` field for every future run, the two canonical
+manifests reflect the current clean commit, and every established gate
+(lightweight, dependency, and the real scientific characterization gate)
+passes. This closes the finding; no further Tier 3 chunk work is implied
+or affected by this change. Chunks 2 through 12 remain open.
+
+## 2026-09-02: Propagate scientific setup failures instead of silently continuing
+
+### Objective
+
+Address a second GitHub Copilot review finding, on
+`scripts/setup_buildAndFit.sh` lines 12-14: `source
+"${ATLAS_LOCAL_ROOT_BASE}/user/atlasLocalSetup.sh"`, `lsetup "views
+LCG_102a ..."`, and `lsetup cmake` had no exit-status check. Because every
+caller that sources this script deliberately disables `errexit` first
+(required, since ATLAS's own setup machinery isn't nounset/errexit-safe —
+see the 2026-08-28 "ATLAS setup errexit compatibility corrected" entry), a
+failed setup command was silently followed by the script's remaining
+`export`/`mkdir` lines succeeding, so the sourced script still returned 0
+overall. A caller checking that return code would see success and
+potentially build or fit against the host environment instead of the
+pinned LCG_102a view.
+
+### Scope: both branches, and the two callers that don't check the sourcing's own exit status
+
+Reading the complete file (not just the three lines Copilot's comment
+quoted) found the identical pattern in the `else` branch (the *default*
+LXPlus path used whenever `ANAFIT_LCG_PLATFORM` is unset — the path this
+very development session has been exercising on lxplus975 all along, not
+just the hosted-CI override path Copilot's comment happened to point at):
+`source setup_lxplus.sh` for both `xmlAnaWSBuilder` and `quickFit` had the
+same unguarded-failure problem.
+
+Separately, guarding `setup_buildAndFit.sh` alone is necessary but not
+sufficient: `scripts/run_anaFit_J100.sh` and `scripts/run_anaFit_J50.sh`
+have no `set -e` anywhere and never checked the exit status of `.
+"$setup_script"` — so even a correctly-`return 1`-ing setup script would
+have been silently ignored by the two authoritative launchers, which is
+exactly the concern Copilot's own wording ("The workflow then treats a
+failed scientific setup as successful") points at. The hosted CI
+workflow (`.github/workflows/scientific-analysis.yml`) already checks
+this correctly (`setup_status=$?` after each `source
+scripts/setup_buildAndFit.sh`, per the same 2026-08-28 precedent) and did
+not need changing.
+
+### Changes completed
+
+- `scripts/setup_buildAndFit.sh`:
+  - `ANAFIT_LCG_PLATFORM` branch: `source atlasLocalSetup.sh`, both
+    `lsetup` calls now `|| return 1`.
+  - Default LXPlus branch: `source setup_lxplus.sh` (both
+    `xmlAnaWSBuilder` and `quickFit`) now has its exit status captured
+    explicitly and checked *after* the following `cd .. || return 1` —
+    not `|| return 1` directly on the `source` line, which would have
+    returned before restoring the working directory, leaving the calling
+    shell inside `xmlAnaWSBuilder/`/`quickFit/` on failure. Verified this
+    ordering matters: an earlier draft of this fix using the naive `||
+    return 1` form was caught by a directory-restoration test before being
+    corrected (see Tests below).
+  - Verified the success path is unaffected: sourced the corrected script
+    directly on this LXPlus session (the same default branch every
+    integration-gate run in this session has been exercising) — exit
+    status 0, `_DIRXMLWSBUILDER`/`_DIRFIT` both correctly exported, `pwd`
+    correctly back at the repository root afterward.
+- `scripts/run_anaFit_J100.sh`, `scripts/run_anaFit_J50.sh`: added a
+  `setup_status=$?` check immediately after `. "$setup_script"`, printing
+  an error and exiting with that status on failure — the exact same idiom
+  already used later in both scripts for `run_anaFit.py`'s own
+  `analysis_status`.
+
+### Tests added
+
+- `test_setup_build_and_fit_propagates_setup_lxplus_failure_and_restores_cwd`
+  (new, first direct test of `setup_buildAndFit.sh` itself — no prior
+  test exercised its own logic in isolation): sources the real script
+  against an isolated fake directory tree with a deliberately-failing
+  `xmlAnaWSBuilder/setup_lxplus.sh`, asserts the source reports exit
+  status 1 **and** that the calling shell's working directory is
+  correctly restored, not left inside `xmlAnaWSBuilder/`. Caught the
+  cwd-leak regression described above during development of this fix.
+- `test_launcher_propagates_setup_failure_before_running_analysis`
+  (new, parametrized over both launchers, mirroring the existing
+  `test_launcher_propagates_analysis_failure_before_plotting` pattern):
+  stubs `ANAFIT_SETUP_SCRIPT` with a script that fails, asserts the
+  launcher exits with that failure code and that the (separately stubbed)
+  analysis runner is never invoked and no plot output is produced.
+
+A note on a test-authoring pitfall hit and fixed while writing the first
+new test: the fake failing `setup_lxplus.sh` initially used `exit 1`.
+Because `setup_lxplus.sh` is always *sourced*, never executed, `exit`
+terminates the entire calling shell rather than just the source
+operation — which silently killed the whole test harness process instead
+of exercising the intended failure path. Confirmed the real external
+`xmlAnaWSBuilder/setup_lxplus.sh` and `quickFit/setup_lxplus.sh` already
+correctly use `return 1`, and fixed the fake fixture to match.
+
+### Verification performed
+
+- `bash -n` on all three changed scripts → syntax OK.
+- `python -m pytest tests/test_run_anaFit.py -k "setup_build_and_fit or launcher" -v`
+  → 7 passed (2 new + 5 existing, all unaffected).
+- `python -m pytest tests/test_run_anaFit.py -q` → 48 passed.
+- `python scripts/quality_check.py --mode full` → 127 passed, 2
+  deselected, Ruff/Black clean, exit code 0.
+- `python -m pytest tests/test_analysis_workflows_integration.py -v -m "requires_root or integration"`
+  → **2 passed**, 238.75s: both the authoritative J100/J50
+  characterization gate (real rerun, frozen reference reproduced) and
+  `test_authoritative_setup_provides_scientific_runtime` (which directly
+  sources the now-corrected `setup_buildAndFit.sh` to establish the real
+  scientific environment) passed — confirming the fix does not break real
+  environment setup, only closes the silent-failure gap.
+- `python -m pytest tests/test_repo_utils.py -m "requires_analysis_dependencies" -v`
+  → 2 passed, 11 deselected.
+- `git status -sb` → only the four intended files; `git diff --check`
+  passed.
+
+### Current status
+
+Both GitHub Copilot findings raised on this PR are now resolved and
+verified. This change is standalone, not tied to a `doc/TIER3_COMPLETION_PLAN.md`
+chunk. Chunks 2 through 12 remain open.
+
+## 2026-09-02: Correct wrong PATH/LD_LIBRARY_PATH in the ANAFIT_LCG_PLATFORM branch
+
+### Objective
+
+Address a third GitHub Copilot review finding, on
+`scripts/setup_buildAndFit.sh` lines 18-21: the `ANAFIT_LCG_PLATFORM`
+branch exported `_BIN_PATH="${_DIRXMLWSBUILDER}/bin"` and
+`_LIB_PATH="${_DIRXMLWSBUILDER}/lib"`, but `install.sh` actually builds
+XMLReader and `libxmlAnaWSBuilder.so` into `xmlAnaWSBuilder/build/bin` and
+`xmlAnaWSBuilder/build/lib`.
+
+### Independent verification of the claim (not taken on faith)
+
+Directly inspected the real checkout before changing anything:
+
+- `xmlAnaWSBuilder/bin/` — **does not exist**.
+- `xmlAnaWSBuilder/build/bin/XMLReader` — the real, built executable.
+- `xmlAnaWSBuilder/lib/` — exists and holds the copied
+  `libRooFitExtensions.so` (a real, separate dependency — this is the
+  directory Copilot's suggested fix correctly retains rather than
+  discards).
+- `xmlAnaWSBuilder/build/lib/libxmlAnaWSBuilder.so` — the real library,
+  entirely absent from the old `LD_LIBRARY_PATH`.
+
+Copilot's finding and suggested fix (union both lib directories, point
+bin at `build/bin`) were both confirmed correct.
+
+### The identical, unflagged bug in the parallel quickFit block
+
+Reading the whole file (not just the quoted lines) found the same pattern
+one block down, for `quickFit`, which Copilot's comment did not mention:
+`_BIN_PATH="${_DIRFIT}/bin"` (exists but is **empty**) and
+`_LIB_PATH="${_DIRFIT}/lib"` (has `libRooFitExtensions.so` but not
+`libquick.so`). quickFit's actual build output is flat in `quickFit/build/`
+(`quickFit`, `quickLimit`, `quickAsimov`, `libquick.so` all sit directly
+there, confirmed via `ls` and via `install.sh`'s own build-verification
+step), not nested under `build/bin`/`build/lib` the way xmlAnaWSBuilder is.
+Fixed with the equivalent, layout-adjusted correction.
+
+### Impact analysis — precise, not assumed
+
+Before concluding this was purely defensive, checked what actually
+depends on the broken values:
+
+- `readelf -d` on the real built `XMLReader`/`quickFit` binaries shows
+  both have **RPATH baked in** at build time (absolute paths into this
+  checkout's own `build/lib` / `build` and `RooFitExtensions/build`), and
+  `ldd` confirms both resolve their own shared libraries via that RPATH
+  already. So on this checkout, the `LD_LIBRARY_PATH` gap was likely
+  inert for XMLReader/quickFit specifically — and `run_anaFit.py` invokes
+  both via **hardcoded relative paths**
+  (`xmlAnaWSBuilder/build/bin/XMLReader`, `quickFit/build/quickFit`), so
+  the broken `PATH` never mattered for those two either.
+- `quickLimit` is different: `run_anaFit.py` invokes it via a **bare
+  command name** (`execute("quickLimit -f ...")`, `python/run_anaFit.py:782`,
+  no path prefix at all) — this genuinely depends on `PATH` alone to find
+  `quickFit/build/quickLimit`. Under the old, broken
+  `_BIN_PATH="${_DIRFIT}/bin"` (empty directory), any `dolimit=True` run
+  under `ANAFIT_LCG_PLATFORM` would have failed with "command not found."
+  This was never caught by the passing hosted CI run because the
+  canonical J100/J50 background-only gate always has `dolimit=False` and
+  never exercises `quickLimit`.
+
+This is reported precisely rather than claiming the fix "unbroke the
+hosted pipeline" (it likely didn't, for the tested background-only path)
+or dismissing the finding as harmless (it was a real, silent gap for the
+untested `dolimit=True` path, exactly the kind of defect Copilot review
+exists to surface before it's hit in practice).
+
+### Changes completed
+
+- `scripts/setup_buildAndFit.sh`:
+  - `ANAFIT_LCG_PLATFORM` branch: `_BIN_PATH`/`_LIB_PATH` corrected for
+    both `xmlAnaWSBuilder` (`build/bin`; `build/lib:lib`) and `quickFit`
+    (`build`; `build:lib`, since quickFit's build output has no nested
+    `bin`/`lib`).
+  - `ATLAS_LOCAL_ROOT_BASE` changed from unconditionally hardcoded to
+    `"${ATLAS_LOCAL_ROOT_BASE:-/cvmfs/atlas.cern.ch/repo/ATLASLocalRootBase}"`
+    — honors an existing value instead of always overwriting it. This is
+    what makes the new test below possible at all: it is the same
+    override-if-unset convention already used throughout this repo's
+    scripts (`ANAFIT_SETUP_SCRIPT`, `ANAFIT_RUNNER`, `ANAFIT_OUTPUT_DIR`,
+    etc.), applied here for the same reason. Zero behavior change in
+    production, where this variable is never pre-set.
+
+### Tests added
+
+- `test_setup_build_and_fit_lcg_platform_branch_exposes_build_directories`
+  (new): exercises the **real** `ANAFIT_LCG_PLATFORM` branch end-to-end,
+  using a fake `ATLAS_LOCAL_ROOT_BASE` tree containing a stub
+  `atlasLocalSetup.sh` that defines a no-op `lsetup` function (avoids
+  needing genuine CVMFS/Ubuntu infrastructure, which isn't available on
+  this lxplus session for this specific platform branch). Asserts the
+  resulting `PATH` contains the real `xmlAnaWSBuilder/build/bin` and
+  `quickFit/build` directories, `LD_LIBRARY_PATH` contains all four real
+  library directories (`xmlAnaWSBuilder/build/lib`, `xmlAnaWSBuilder/lib`,
+  `quickFit/build`, `quickFit/lib`), and explicitly that the old, wrong
+  `xmlAnaWSBuilder/bin` path never reappears.
+
+### Verification performed
+
+- `bash -n scripts/setup_buildAndFit.sh` → syntax OK.
+- `python -m pytest tests/test_run_anaFit.py -k "setup_build_and_fit or launcher" -v`
+  → 8 passed (1 new + 7 existing, all unaffected).
+- `python -m pytest tests/test_run_anaFit.py -q` → 49 passed.
+- `python scripts/quality_check.py --mode full` → 128 passed, 2
+  deselected, Ruff/Black clean, exit code 0.
+- `python -m pytest tests/test_analysis_workflows_integration.py -v -m "requires_root or integration"`
+  → 2 passed, 183.14s (both the authoritative J100/J50 characterization
+  gate and the runtime-readiness gate) — confirms the unchanged default
+  LXPlus branch (the one actually exercised on this session's own
+  environment) and the rest of the script are unaffected by this fix.
+  The `ANAFIT_LCG_PLATFORM` branch itself is validated by the new
+  isolated unit test above plus, going forward, the existing hosted
+  `scientific-analysis.yml` workflow, which is the only environment that
+  genuinely exercises that branch for real.
+- `python -m pytest tests/test_repo_utils.py -m "requires_analysis_dependencies" -v`
+  → 2 passed, 11 deselected.
+- `git status -sb` → only the two intended files; `git diff --check`
+  passed.
+
+### Current status
+
+All three GitHub Copilot findings raised on this PR are now resolved and
+verified. Standalone change, not tied to a `doc/TIER3_COMPLETION_PLAN.md`
+chunk. Chunks 2 through 12 remain open.
+
+## 2026-09-02: Revise the plan's PR model to match the workflow actually used
+
+### Objective
+
+Address a fourth GitHub Copilot review finding, on
+`doc/TIER3_COMPLETION_PLAN.md` guardrail 7 ("One PR = one step of one
+chunk"): the actual PR opened for this branch bundles the pre-flight
+baseline, Chunk 1's characterization and extraction, and several unrelated
+standalone fixes together, which is exactly what guardrail 7 said never to
+do. Copilot correctly identified that this means the plan's stated
+mechanism for enforcing "tests written and human-verified before
+production files are modified" — a separately merged characterization PR,
+required before the extraction PR can even be opened — was not actually
+happening.
+
+### Root cause: the plan's guardrail 7 never matched the workflow the user chose
+
+Earlier in this branch's history (Chunk 1's characterization checkpoint),
+the user was explicitly asked whether to verify each step locally in
+conversation or push a branch and open a real GitHub PR per step, and
+chose local conversational verification. That choice is fundamentally
+incompatible with guardrail 7's literal wording, which assumes a
+separately-merged PR exists between every characterization and extraction
+step. The plan document was never updated to reflect that choice at the
+time it was made — this entry is that update, prompted by Copilot
+correctly noticing the gap between the document and the practice.
+
+### What was preserved vs. what changed
+
+The safety **substance** guardrail 7 exists for was, in fact, honored for
+Chunk 1: the characterization tests were reviewed (test code read, a real
+unmocked trace of `execute()`'s output shown, a full line-by-line
+walkthrough given) and explicitly confirmed by the user ("i agree lets
+continue") *before* `run_anaFit.py` was touched. What was missing was the
+GitHub **artifact** of that — a separately merged PR — not the
+verification itself.
+
+`doc/TIER3_COMPLETION_PLAN.md` is revised accordingly, offered to and
+selected by the user from three options (rewrite the guardrail to match
+reality; keep the guardrail and literally split into per-step PRs from
+here on; retroactively split the already-open PR too). The chosen
+approach:
+
+- Section 5 ("The PR-chunk delivery model") retitled "The chunk delivery
+  model," with a "Revision note" at its start explaining this exact
+  history transparently, and rewritten throughout: each chunk is still
+  delivered as two ordered, individually-verifiable steps (renamed
+  "Step A"/"Step B" throughout the whole document, replacing "PR A"/"PR
+  B"), each its own commit, but the human-verification checkpoint between
+  them happens in session before Step B's commit is made, not via a
+  separately merged PR. A new subsection, "What actually gets reviewed on
+  GitHub," states plainly that individual steps are not each their own PR
+  — work accumulates as ordered commits, and a PR is opened per chunk or
+  a small labeled batch for final review, with the Step A/Step B ordering
+  verifiable by reading the commit history within it.
+- Guardrails 2, 3, 7, and 8 (Section 1) reworded to reference commits and
+  the in-session verification checkpoint instead of PR merges.
+- Section 8 retitled "Per-step compliance checklist," both checklist
+  variants reworded (e.g. "is PR A merged" → "did Step A's commit precede
+  this one in the branch history").
+- Section 6 chunk-by-chunk text: every "PR A"/"PR B" label renamed to
+  "Step A"/"Step B"; "single PR" chunk headers (0, 8, 12) renamed "single
+  commit"; stray "PR content"/"PR description"/"opened and merged as its
+  own tiny PR" phrasing corrected throughout.
+- Section 7 and Section 9 updated similarly (gate-comment wording, the
+  completion definition's "both its PRs... merged" → "both its steps'
+  commits... made").
+
+No guardrail was weakened: every substantive requirement (tests before
+code, human verification of characterization before extraction, explicit
+recording of that verification, append-only activity log, no scope
+creep) is unchanged. Only the mechanism for the human-verification
+checkpoint and the artifact structure around it changed, to describe what
+this project actually does.
+
+### Verification performed
+
+- `grep -n "single PR\|PR's\|PR provides\|PR description\|PR content\|PR is not ready\|PR is marked\|two-PR\|characterization PR\|extraction PR\|PR A\|PR B\|PRs\b" doc/TIER3_COMPLETION_PLAN.md`
+  → only two intentional, correct remaining matches (the Revision Note's
+  historical reference to "the resulting single PR" Copilot reviewed, and
+  "What actually gets reviewed on GitHub"'s description of the real,
+  eventual PR's own commit history) — confirmed both are appropriate, not
+  leftover stale wording.
+- `grep -nE '[[:blank:]]+$' doc/TIER3_COMPLETION_PLAN.md` → clean.
+- `git diff --check` → passed.
+- No code, test, or gate changes in this entry — documentation only.
+
+### Current status
+
+`doc/TIER3_COMPLETION_PLAN.md`'s process description now matches the
+workflow this branch has actually been using since Chunk 1. Going
+forward, chunks continue to follow the same Step A → human verification →
+Step B sequence as before; only the document's account of how that gets
+reviewed on GitHub changed. Chunks 2 through 12 remain open.
