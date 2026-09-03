@@ -4102,3 +4102,636 @@ reference exactly.
 
 Chunks 4 through 12 in `doc/TIER3_COMPLETION_PLAN.md` are open. Chunk 3
 (both Step A and Step B) is complete and verified.
+
+## 2026-09-02: Tier-3 refactoring — Chunk 4.A: characterization tests for `load_bumphunter_results`/`run_bumphunter`
+
+### Objective
+
+Pin down the current, unmodified behavior of `load_bumphunter_results()`
+and `run_bumphunter()` in `python/run_anaFit.py` before extracting them
+into `run_masking.py`, per `doc/TIER3_COMPLETION_PLAN.md` Chunk 4.
+`should_mask()` is a new function with no prior behavior to characterize
+(per the plan's own explicit carve-out), so it has no Step A tests —
+those are written fresh in Step B under guardrail 4.
+
+### Pre-change state
+
+Both target functions already had eight direct tests (ten cases counting
+`rejects_invalid_mask_limits`'s three-way parametrization). All ten pass
+unmodified. Reviewing `load_bumphunter_results()`'s four validation
+branches against its four existing tests found two branches with no
+coverage at all: the `if not isinstance(results, dict)` check (every
+fixture is already a dict) and the `BlindRange` non-empty-string check
+(every fixture already uses `"500,600"` or `"stale"`).
+
+### A discrepancy between the plan's rationale and the actual code, found while re-reading `run_anaFit()`
+
+The plan's Chunk 4 rationale states "both call sites already use the
+exact same `>` comparison," citing `if pval_global > maskthreshold` and
+`if pval_masked > maskthreshold`. Re-reading the coordinator directly
+found a **third** occurrence of the identical `pval_global > maskthreshold`
+sub-expression, reused inside a compound condition at what is currently
+line 530: `if dolimit and dosignal and pval_global > maskthreshold:`
+(gates whether `quickLimit` runs). This is exactly the kind of
+duplication-that-drifts-unnoticed the chunk exists to eliminate, and
+leaving it as a bare `>` comparison while the other two sites call
+`should_mask()` would defeat the point. Step B will replace all three
+occurrences, not the two the plan's rationale text named -
+`test_run_anafit_quicklimit_failure_prevents_success_manifest` already
+exercises this exact branch (`dosignal=True, dolimit=True, pval_global=0.25`
+mocked, `maskthreshold=0.01`), so it doubles as the regression check for
+this third call site's rewrite with no new test needed.
+
+### A second Test Relocation Rule exception anticipated for Step B
+
+`run_bumphunter()` calls `execute_required(...)`, which lives in
+`run_execution.py`, a different module from where `run_bumphunter` is
+moving (`run_masking.py`). Its four tests currently patch
+`module.execute_required` (`module` = the loaded `run_anaFit` object) -
+this only works today because both functions are defined in the same
+module. Once `run_bumphunter` moves, `execute_required` will be looked up
+in `run_masking`'s own namespace (via its own `from run_execution import
+execute_required`), so the relocated tests will need to patch
+`run_masking.execute_required` directly - the same necessary-consequence
+pattern already documented for Chunk 1.B's `execute`/`execute_required`
+split and Chunk 3.B's `find_repo_root`/`ROOT` cases.
+
+### Target functions — inputs and outputs (as they exist today)
+
+| Function | Inputs | Outputs | Side effects |
+|---|---|---|---|
+| `load_bumphunter_results(results_file)` | `results_file: str` | `dict {"BlindRange","MaskMin","MaskMax"}` | raises `ValueError` on malformed input |
+| `run_bumphunter(postfitfile, folder)` | `postfitfile: str`, `folder: str` | same shape as above | deletes stale `BHresults.json`; runs the BumpHunter subprocess; raises `RuntimeError` on failure |
+
+### Tests added
+
+- `test_load_bumphunter_results_rejects_non_dict_payload` — a JSON array
+  instead of an object, asserts `"must be a JSON object"`.
+- `test_load_bumphunter_results_rejects_invalid_blind_range` (parametrized
+  `["", "   "]`) — asserts `"BlindRange must be a non-empty string"`.
+
+### What this commit does NOT do
+
+No production file was modified. `git diff --stat -- python/run_anaFit.py`
+was empty throughout this change — only `tests/test_run_anaFit.py` was
+touched (two new tests, 38 lines).
+
+### Verification performed
+
+- `python -m pytest tests/test_run_anaFit.py -v -k "load_bumphunter_results
+  or run_bumphunter"` → 13 passed (10 pre-existing cases plus the 3 new
+  gap-test cases), run against the unmodified `python/run_anaFit.py`.
+- `python -m pytest tests/test_run_anaFit.py -v` → 30 passed (full-file
+  regression check).
+- `python scripts/quality_check.py --mode full` → 134 passed, 2
+  deselected; ruff clean; black clean (14 files unchanged).
+- `git diff --stat` → only `tests/test_run_anaFit.py` touched.
+- `git diff --check` → passed.
+
+### Compliance review (Section 8, Characterization checklist)
+
+1. Chunk 4, Step A.
+2. `git diff --stat` shows only `tests/test_run_anaFit.py` — zero
+   production files touched.
+3. Both new tests assert the real, specific `ValueError` message for
+   their branch, not merely "does not raise."
+4. Tests were run against the unmodified target file before any
+   production change; results reported in full above for review.
+5. Human-verification checkpoint: presented to the user in session for
+   confirmation before Step B's commit is made (recorded per Step B's own
+   activity-log entry once given).
+
+### Remaining open chunks
+
+Chunk 4.B (extraction of `run_masking.py`) and Chunks 5 through 12 are
+open.
+
+## 2026-09-02: Tier-3 refactoring — Chunk 4.B: extract `run_masking.py`
+
+### Objective
+
+Move `load_bumphunter_results()` and `run_bumphunter()`, characterized in
+Chunk 4.A (commit `4930636`), out of `python/run_anaFit.py` into a new
+`python/run_masking.py`, add the new `should_mask(p_value, threshold)`
+predicate, and replace all three coordinator-level `> maskthreshold`
+comparisons with calls to it, per `doc/TIER3_COMPLETION_PLAN.md` Chunk 4.
+
+### What changed
+
+- `python/run_masking.py` created, containing `load_bumphunter_results()`
+  and `run_bumphunter()` moved verbatim, plus the new
+  `should_mask(p_value, threshold)`, returning `p_value <= threshold` -
+  `True` exactly when the coordinator's original `if pval_global >
+  maskthreshold` branch would **not** be taken, matching its existing `>`
+  convention precisely.
+- `python/run_anaFit.py`: both function definitions removed; replaced
+  with `from run_masking import run_bumphunter, should_mask` (flat
+  sibling-import style; `load_bumphunter_results` is not imported here -
+  it is called only internally by `run_bumphunter`, confirmed by
+  `grep -n "load_bumphunter_results(\|run_bumphunter(" python/run_anaFit.py`
+  before the move). All **three** `> maskthreshold` call sites rewritten,
+  per Chunk 4.A's finding:
+  - `if pval_global > maskthreshold` -> `if not should_mask(pval_global, maskthreshold)`
+  - `if pval_masked > maskthreshold` -> `if not should_mask(pval_masked, maskthreshold)`
+  - `if dolimit and dosignal and pval_global > maskthreshold` -> `if dolimit and dosignal and not should_mask(pval_global, maskthreshold)`
+  Each preserves the exact original control flow (`p > t` is logically
+  `not (p <= t)`, i.e. `not should_mask(p, t)`).
+- `tests/test_run_masking.py` created: the ten relocated test functions
+  (13 cases) plus the new `test_should_mask_matches_coordinator_convention_at_exact_threshold`
+  (parametrized: exact threshold, clearly below, clearly above), using
+  the plain `from python import run_masking` style.
+- `scripts/quality_check.py`: added `python/run_masking.py` to
+  `python_targets` and `tests/test_run_masking.py` to `test_targets`.
+
+### The anticipated Test Relocation Rule exception, confirmed
+
+`run_bumphunter`'s four tests patch `execute_required` - as flagged in
+Chunk 4.A, this now targets `run_masking.execute_required` (the name
+bound in `run_masking`'s own namespace via its own `from run_execution
+import execute_required`), not the old `module.execute_required`. Same
+pattern as Chunk 1.B and Chunk 3.B: a necessary consequence of
+`execute_required` living in a different module from where it is called,
+not a hidden behavior change. `run_bumphunter`'s own intra-module call to
+`load_bumphunter_results` needed no such change - both moved into
+`run_masking.py` together.
+
+### A second dead-import discovery, fixed immediately this time (unlike Chunk 3.B's deferral)
+
+`python scripts/quality_check.py --mode full` failed ruff (`F401 'json'
+imported but unused`) on `tests/test_run_anaFit.py`: relocating all six
+`load_bumphunter_results` tests removed every remaining use of `json.` in
+that file. Unlike Chunk 3.B's `hashlib`/`platform`/`subprocess` dead
+imports in `python/run_anaFit.py` (deliberately deferred to Chunk 8,
+because that file is not yet registered with the quality gate at all),
+`tests/test_run_anaFit.py` **is already** in `test_targets` - ruff runs
+against it on every gate today, so this was not a "some later chunk will
+clean it up" situation but a real, immediate gate failure caused directly
+by this chunk's own test relocation. Fixed by removing the now-unused
+`import json` line. Re-ran the full gate afterward: clean.
+
+### Confirm: scientific behavior preserved, including the newly-discovered third call site
+
+Both `load_bumphunter_results()` and `run_bumphunter()`'s bodies are
+byte-for-byte identical to before the move. The three rewritten
+comparisons are logically equivalent to the originals (confirmed by
+inspection, not just by test result). Ran the full targeted acceptance
+check plus the **mandatory** integration gate (per Section 7, this chunk
+changes real branch conditions):
+`test_run_anafit_quicklimit_failure_prevents_success_manifest`
+(`dosignal=True, dolimit=True, pval_global=0.25 mocked, maskthreshold=0.01`)
+passed unchanged, directly exercising the third call site's rewrite. The
+real, authoritative J100/J50 pipeline also passed, matching the frozen
+reference exactly - both canonical workflows still take the unmasked
+accept path through all three rewritten conditions.
+
+### Verification performed
+
+- `grep -n "maskthreshold" python/run_anaFit.py` → confirms all three
+  comparisons now call `should_mask()`; the other five matches are the
+  argparse definition, kwarg passthroughs, and a print statement,
+  unaffected.
+- `python -m pytest tests/test_run_masking.py tests/test_run_anaFit.py -v`
+  → 33 passed (16 cases in `test_run_masking.py` + 17 remaining in
+  `test_run_anaFit.py` = 33, matching the pre-move total of 30 plus the 3
+  new `should_mask` cases exactly).
+- `python scripts/quality_check.py --mode full` → 137 passed, 2
+  deselected; ruff clean (after the `json` import fix); black clean (16
+  files unchanged); exit code 0.
+- `python -m pytest tests/test_analysis_workflows_integration.py -m "integration and requires_root" -v`
+  → 1 passed in 150.66s - the real J100/J50 authoritative pipeline run,
+  **mandatory** for this chunk per Section 7, matched against the frozen
+  reference exactly.
+- `git diff --check` → passed.
+
+### Compliance review (Section 8, Extraction checklist)
+
+1. Chunk 4, Step B (this entry).
+2. Step A is committed (`4930636`) and referenced above.
+3. No scientific constants, references, tolerances, dependency revisions,
+   or canonical workflow arguments touched. The three rewritten branch
+   conditions are logically equivalent to the originals, verified by both
+   unit and integration tests.
+4. Relocated tests' diffs are import-statement-and-call-site-only except
+   the one documented, anticipated `execute_required` patch-target
+   change.
+5. `should_mask()` (the one new function) is covered by three cases
+   (exact threshold, clearly below, clearly above), per the plan's
+   explicit requirement.
+6. Confirmed by grep: `run_anaFit.py` actually imports and never
+   redefines `run_bumphunter`/`should_mask`; all three comparisons now
+   call `should_mask()`.
+7. Only this chunk's five changed/new files were staged.
+8. All required Section 7 gates ran and passed, including the mandatory
+   integration gate, output captured above.
+9. `git diff --check` passed.
+10. This activity-log entry appended (not a rewrite of any existing
+    section).
+11. Chunks 5 through 12 remain open, listed below.
+12. No other branch's Tier 3 work was consulted.
+
+### Remaining open chunks
+
+Chunks 5 through 12 in `doc/TIER3_COMPLETION_PLAN.md` are open. Chunk 4
+(both Step A and Step B) is complete and verified.
+
+## 2026-09-02: Tier-3 refactoring — Chunk 5.A: first-ever characterization tests for the templating/prefit block
+
+### Objective
+
+Write the **first direct tests ever** for `replaceinfile()` and the
+~150-line inline templating/prefit block inside `run_anaFit()`, before
+extracting them into `python/run_templates.py`, per
+`doc/TIER3_COMPLETION_PLAN.md` Chunk 5. Per the plan's own framing, this
+is a genuine characterization step, not a formality: this logic has never
+been pinned down at the unit level before, only indirectly through the
+full J100/J50 integration gate.
+
+### Finalizing `prepare_run_templates(...)`'s exact signature (the plan's own draft table needed correction)
+
+The plan's Chunk 5 module table listed a draft input list explicitly
+flagged "finalize the exact set while reading the current block." Doing
+that reading directly against the source (not the draft) found:
+
+- `nbkg` and `nsig` are **missing from the plan's draft input list** but
+  are genuinely required: `nbkg` is read and conditionally reassigned
+  (by the `doprefit` branch) before being substituted into the category
+  file; `nsig` is read as a substitution value. Both must be parameters.
+- `nbkg`'s prefit-reassignment does **not** need to be returned to the
+  coordinator: `grep -n "\bnbkg\b" python/run_anaFit.py` confirms it is
+  never read again after the block's own final `replaceinfile` call.
+- `signame` never changes inside the block - it is a pass-through
+  substitution value, not something the block "derives." No output
+  needed for it, contrary to the draft table's "any poi/signame derived
+  values" phrasing.
+- `poi` is decided by a **separate**, unrelated piece of coordinator
+  logic (`if dosignal: poi = ... else: poi = None`) immediately after the
+  block, which touches no template file and calls neither
+  `replaceinfile` nor `PreFitter`. It is out of this chunk's scope
+  (Chunk 6's concern, since it only feeds `build_fit_extract`), not part
+  of `prepare_run_templates`.
+- `tmptopfile`, `tmpcategoryfile`, `xml_categoryfile`, and `xml_wsfile`
+  **are** read again after the block (in the masking branch, to stage the
+  masked-refit XML copies) - confirmed by
+  `grep -n "tmpcategoryfile\|xml_categoryfile\|xml_wsfile" python/run_anaFit.py`.
+  These four must be the function's return value.
+- `covariancedict` is a `run_anaFit()` parameter but is **entirely
+  unused** in live code today - every reference to it is inside a
+  commented-out block. It will not be threaded into
+  `prepare_run_templates` in Step B; there is no live behavior depending
+  on it.
+
+Final signature for Step B:
+`prepare_run_templates(folder, topfile, categoryfile, backgroundfile,
+signalfile, signame, wsfile, sigmean, sigwidth, datafile, datahist,
+rangelow, rangehigh, nbkg, nsig, doprefit, systdict)` returning
+`(tmptopfile, tmpcategoryfile, xml_categoryfile, xml_wsfile)`.
+
+### A real, previously-undocumented quirk found while hand-verifying the prefit test
+
+Writing `test_run_anafit_prefit_seeds_background_file_from_fitted_parameters`
+first assumed the PAR-substitution loop replaces each whole `[PARn,lo,hi]`
+range annotation with the fitted value. Running the test against the
+unmodified file disproved this: the loop is a plain
+`replaceinfile(tmpbackgroundfile, [("PAR%d" % (i+1), str(initPars[i]))])`
+per parameter - a naive substring/regex swap of the literal text `PARn`,
+not a replacement of the surrounding annotation. The `[...,lo,hi]`
+brackets survive in the output file with only the `PARn` token inside
+them replaced (e.g. `[PAR1,-5,5]` becomes `[11.0,-5,5]`, not `11.0`) -
+and because `replaceinfile` operates over the whole file text, this
+happens even inside HTML/XML comments (`<!-- ... [PAR1,-99,99] ... -->`
+becomes `<!-- ... [11.0,-99,99] ... -->`). This is real, current,
+unrelated-to-doprefit-testing-before-now behavior; the test now pins it
+down exactly as observed rather than as originally assumed. Step B must
+preserve it exactly - it is exactly the kind of thing an implementer
+"fixes" by accident while moving code.
+
+### Target functions — inputs and outputs
+
+| Function | Inputs | Outputs | Side effects |
+|---|---|---|---|
+| `replaceinfile(f, old_new_list)` | `f: str`, `old_new_list: list[tuple[str,str]]` | `None` | rewrites `f` in place, applying each `re.sub` in order (substitutions chain against the already-modified text) |
+| `prepare_run_templates(...)` (new in Step B) | see finalized signature above | `(tmptopfile, tmpcategoryfile, xml_categoryfile, xml_wsfile)` | copies/edits XML template files on disk; runs `PreFitter` when `doprefit` is set |
+
+### Tests added (all new — this block had zero direct tests before)
+
+- `test_replaceinfile_applies_ordered_regex_substitutions` — chains
+  `PLACEHOLDER_A -> PLACEHOLDER_B -> final_value` to prove substitutions
+  apply in order against the already-modified text, not independently
+  against the original.
+- `test_run_anafit_stages_templates_for_a_representative_case` —
+  `doprefit=False`, `signalfile=None`; asserts the exact generated
+  `tmptopfile`/`tmpcategoryfile` content, including that the
+  `SIGNALFILE` placeholder is substituted with a computed path even
+  though no signal file was provided (confirmed real: `tmpsignalfile`/
+  `xml_signalfile` are computed unconditionally in production).
+- `test_run_anafit_prefit_seeds_background_file_from_fitted_parameters` —
+  `doprefit=True`, a background file name containing "six" (nPars=6), a
+  background file with two real `[PARn,lo,hi]` `<ModelItem>` lines (one
+  commented out, correctly excluded from range parsing) and a
+  `FakePreFitter` test double; asserts the exact `parRangeLow`/
+  `parRangeHigh` passed to `PreFitter`, the exact seeded background-file
+  content (including the quirk above), and the exact `NBKG` string
+  format derived from the fitted value.
+- `test_run_anafit_prefit_npars_detection_matching_both_three_and_four_resolves_to_four` —
+  the plan's required regression test: a background file path containing
+  both `"three"` and `"four"`; asserts `PreFitter` is constructed with
+  `nPars=4`, pinning down the standalone-`if`-then-separate-`elif`-chain
+  quirk exactly as it exists today.
+- `test_run_anafit_stages_signal_template_with_systematic_placeholders` —
+  a populated `systdict`; asserts the exact seeded signal-file content,
+  including both named systematic sources substituted and an unlisted
+  `[MAG_SCALE_UNLISTED]` placeholder caught by the catch-all pattern and
+  replaced with `[0]`.
+
+### What this commit does NOT do
+
+No production file was modified. `git diff --stat -- python/run_anaFit.py`
+was empty throughout this change — only `tests/test_run_anaFit.py` was
+touched (five new tests, 402 lines).
+
+### Verification performed
+
+- `python -m pytest tests/test_run_anaFit.py -v -k "replaceinfile or
+  stages_templates or prefit_seeds or npars_detection or
+  systematic_placeholders"` → 5 passed, run against the unmodified
+  `python/run_anaFit.py`. One assertion (the PAR-substitution content)
+  was corrected after the first run disproved the initial hand-derived
+  expectation, per the quirk documented above — a real characterization
+  correction, not a retrofit to make a test pass.
+- `python -m pytest tests/test_run_anaFit.py -v` → 22 passed (full-file
+  regression check).
+- `python scripts/quality_check.py --mode full` → 142 passed, 2
+  deselected; ruff clean; black clean after one whitespace/quote-style
+  reformat (`python -m black tests/test_run_anaFit.py`, no logic change).
+- `git diff --stat` → only `tests/test_run_anaFit.py` touched.
+- `git diff --check` → passed.
+
+### Compliance review (Section 8, Characterization checklist)
+
+1. Chunk 5, Step A.
+2. `git diff --stat` shows only `tests/test_run_anaFit.py` — zero
+   production files touched.
+3. Every new test asserts exact generated file content or exact
+   `PreFitter` constructor arguments, not merely "does not raise."
+4. Tests were run against the unmodified target file before any
+   production change; results (including the corrected assertion)
+   reported in full above for review.
+5. Human-verification checkpoint: presented to the user in session for
+   confirmation before Step B's commit is made, with the extra weight the
+   plan calls for given these are first-ever tests, not a relocation —
+   recorded per Step B's own activity-log entry once given.
+
+### Remaining open chunks
+
+Chunk 5.B (extraction and internal decomposition of `run_templates.py`)
+and Chunks 6 through 12 are open.
+
+## 2026-09-02: Tier-3 refactoring — Chunk 5.B: extract and decompose `run_templates.py`
+
+### Objective
+
+Move `replaceinfile()` and the ~150-line inline templating/prefit block,
+characterized in Chunk 5.A (commit `8d614ee`), out of `run_anaFit()` into
+a new `python/run_templates.py`, decomposed into the two private helpers
+the plan names plus one public entry point (not moved intact as one
+function), per `doc/TIER3_COMPLETION_PLAN.md` Chunk 5. This is the
+biggest and, per the plan's own framing, riskiest extraction so far
+(199 lines net removed from the coordinator).
+
+### What changed
+
+- `python/run_templates.py` created with three functions:
+  - `replaceinfile(f, old_new_list)`, moved verbatim.
+  - `_seed_prefit_parameters(datafile, datahist, rangelow, rangehigh,
+    backgroundfile, tmpbackgroundfile, nbkg)` (private) — the `doprefit`
+    sub-block: the `nPars` if/then-separate-elif-chain detection (copied
+    exactly, per Chunk 5.A's regression test), the `[PARn,lo,hi]`
+    range-parsing regex, the `PreFitter` call, and the background-file
+    PAR substitution loop. Returns the updated `nbkg`. `from PreFit
+    import PreFitter` is deferred inside this function (Section 4.2's
+    import-placement rule) — it is the only place in the module that
+    touches a ROOT-facing tool.
+  - `_stage_xml_templates(...)` (private) — everything else: the `.dtd`
+    symlink, path computation, file copies, top/category-file
+    substitution, calling `_seed_prefit_parameters` when
+    `backgroundfile and doprefit`, the final category-file substitution,
+    and the signal-file substitution (including the `systdict`-driven
+    placeholders and the catch-all). Returns `(tmptopfile,
+    tmpcategoryfile, xml_categoryfile, xml_wsfile)` — the finalized
+    signature from Chunk 5.A's analysis.
+  - `prepare_run_templates(...)` (public) — a thin entry point that calls
+    `_stage_xml_templates(...)` and returns its result. This is the one
+    public function `run_anaFit()` now calls.
+  - All original comments preserved verbatim, including the dead,
+    commented-out alternative implementations (the two alternate `.dtd`
+    symlink commands, the commented `replaceinfile(tmpsignalfile,
+    [SIGMEAN, SIGWIDTH])` block, and the entire commented-out
+    `covariancedict` block) - dropping inert comments was judged an
+    unnecessary editorial decision for a chunk whose job is to move code,
+    not curate it.
+- `python/run_anaFit.py`: `replaceinfile()`'s definition and the inline
+  block both removed; replaced with `from run_templates import
+  prepare_run_templates, replaceinfile` (flat sibling-import style) and a
+  single call to `prepare_run_templates(...)`, unpacking its four return
+  values. `replaceinfile` itself is still imported (not just
+  `prepare_run_templates`) because `run_anaFit()`'s masking branch calls
+  it directly for the masked-refit XML copies (`tmptopfilemasked`/
+  `tmpcategoryfilemasked`) - confirmed by `grep -n "replaceinfile("
+  python/run_anaFit.py` before editing, which is why this wasn't
+  mentioned in Chunk 5.A's signature analysis (that only covered the
+  block being moved, not this separate downstream call site).
+- `tests/test_run_templates.py` created with the 5 tests from Chunk 5.A,
+  **rewritten to call `run_templates.prepare_run_templates(...)` and
+  `run_templates.replaceinfile(...)` directly** rather than through
+  `run_anaFit()` end-to-end (see below) - all assertions and expected
+  values are unchanged from Chunk 5.A, only what gets called changed.
+- `scripts/quality_check.py`: added `python/run_templates.py` to
+  `python_targets` and `tests/test_run_templates.py` to `test_targets`.
+
+### Necessary test-relocation adaptation: direct calls, not `run_anaFit()` end-to-end
+
+Chunk 5.A's tests called `module.run_anaFit(...)` end-to-end (mocking
+away `build_fit_extract`/`build_analysis_provenance`/
+`write_analysis_results`) because no standalone function existed yet to
+call directly - that was the whole point of Chunk 5.A being a genuine
+first-ever characterization, not a relocation. Now that
+`prepare_run_templates()` exists as a real, directly-callable function,
+the plan's own text says the relocated tests should scope ROOT/PreFitter
+stubbing "only to the `_seed_prefit_parameters` calls (the rest of the
+module needs none)" - this is only true if the tests call into
+`run_templates.py` directly, not through `run_anaFit.py` (which still
+does a top-level `import ROOT` regardless of what `run_templates.py`
+itself needs). Rewriting the 4 end-to-end tests as direct
+`prepare_run_templates(...)` calls confirmed this: none of the mocking
+of `build_fit_extract`/`build_analysis_provenance`/`write_analysis_results`
+is needed anymore, and only the two `doprefit=True` tests need any
+stubbing at all - not `sys.modules["ROOT"]`, but
+`sys.modules["PreFit"]` (a fake module with a fake `PreFitter` class),
+since `_seed_prefit_parameters`'s `from PreFit import PreFitter` is
+function-local and resolves via `sys.modules` on every call, exactly
+like Chunk 3.B's `collect_scientific_runtime`/`ROOT` case. All five
+tests' assertions and expected values are byte-for-byte the same as
+Chunk 5.A wrote them - only the call mechanism changed, confirmed by
+running them against the moved code and getting identical results
+(including the quirky PAR-substitution content).
+
+### A third dead import, deferred like Chunk 3.B's (not fixed like Chunk 4.B's)
+
+`grep -n "\bre\." python/run_anaFit.py` after the move returns nothing:
+`re` (part of the combined `import os,sys,re,argparse,subprocess,shutil`
+line) is now unused - both of its uses (`replaceinfile`'s `re.sub` and
+the prefit block's `re.findall`) moved with the code. Unlike Chunk 4.B's
+`tests/test_run_anaFit.py` `json` import (a live gate failure, fixed
+immediately because that file is already quality-gated), `re` joins
+`hashlib`/`platform`/`subprocess` in `run_anaFit.py`, which is still not
+registered in `scripts/quality_check.py` - left in place for Chunk 8's
+coordinator-slimming pass, per the same reasoning as Chunk 3.B.
+
+### Confirm: no scientific behavior changed
+
+Every moved line of logic is byte-for-byte identical (aside from the
+ruff/black-driven fixes below, all verified whitespace/syntax-only). Ran
+the **mandatory** integration gate (per Section 7, explicitly required
+for this chunk): the real, authoritative J100/J50 pipeline passed,
+matching the frozen reference exactly - the strongest available
+confirmation that the decomposition did not change the generated XML in
+any way that matters to the fit.
+
+### Ruff/Black fixes required to register the new file (mechanical, zero behavior change)
+
+Registering `run_templates.py` in `python_targets` surfaced pre-existing
+issues in the moved code that were never checked while it lived inside
+the un-gated `run_anaFit.py`:
+- `E722` bare `except:` in `replaceinfile` -> `except Exception:` (does
+  not change what the `try` block can raise: `re.sub` never raises
+  `SystemExit`/`KeyboardInterrupt`).
+- `E713`/`E711` -> `"<!--" not in line` and `systdict is not None`,
+  syntactically equivalent rewrites.
+- `W605` (9 instances) -> the `[PARn,...]`-parsing and `MAG_*`
+  substitution regex patterns changed from plain to raw string literals
+  (`r"..."`); the resulting string values are byte-identical either way
+  (`\[`, `\d`, `\-` are not valid Python escapes in a plain string, so
+  Python already treated them as literal backslash+character - `r"..."`
+  just stops the interpreter's `SyntaxWarning`).
+- A few `E501` (line too long) wraps, including two multi-line splits of
+  dead comment text.
+- `python -m black python/run_templates.py`: one further whitespace-only
+  reformat.
+
+### Verification performed
+
+- `python -m pytest tests/test_run_templates.py -v` → 5 passed, in
+  isolation, confirming zero `ROOT`/`PreFit` stubbing is needed for 3 of
+  the 5 tests and only `sys.modules["PreFit"]` (not `ROOT`) for the other
+  2.
+- `python -m pytest tests/test_run_templates.py tests/test_run_anaFit.py -v`
+  → 22 passed (5 + 17, matching the pre-move total of 22 exactly).
+- `python scripts/quality_check.py --mode full` → 142 passed, 2
+  deselected; ruff clean; black clean (18 files unchanged); exit code 0.
+- `python -m pytest tests/test_analysis_workflows_integration.py -m "integration and requires_root" -v`
+  → 1 passed in 123.97s - **mandatory** for this chunk, matched against
+  the frozen reference exactly.
+- `git diff --check` → passed.
+
+### Compliance review (Section 8, Extraction checklist)
+
+1. Chunk 5, Step B (this entry).
+2. Step A is committed (`8d614ee`) and referenced above.
+3. No scientific constants, references, tolerances, dependency revisions,
+   or canonical workflow arguments touched.
+4. Relocated tests' diffs are not import-line-only - the call target
+   changed from `module.run_anaFit(...)` to
+   `run_templates.prepare_run_templates(...)`/`replaceinfile(...)`
+   directly, documented above as a necessary, anticipated consequence of
+   the function now existing standalone; no assertion or expected value
+   changed.
+5. All three new/moved functions are covered: `replaceinfile` (1 test),
+   `prepare_run_templates`/`_stage_xml_templates` (3 tests covering the
+   representative, signal-systematics, and nPars-regression cases), and
+   `_seed_prefit_parameters` (2 tests, including the nPars regression).
+6. Confirmed by grep: `run_anaFit.py` actually imports and never
+   redefines `prepare_run_templates`/`replaceinfile`.
+7. Only this chunk's five changed/new files were staged.
+8. All required Section 7 gates ran and passed, including the mandatory
+   integration gate, output captured above.
+9. `git diff --check` passed.
+10. This activity-log entry appended (not a rewrite of any existing
+    section).
+11. Chunks 6 through 12 remain open, listed below.
+12. No other branch's Tier 3 work was consulted.
+
+### Remaining open chunks
+
+Chunks 6 through 12 in `doc/TIER3_COMPLETION_PLAN.md` are open. Chunk 5
+(both Step A and Step B) is complete and verified - the plan's riskiest
+single extraction is done.
+
+## 2026-09-02: Fix should_mask() to preserve NaN behavior (GitHub Copilot review, PR #6)
+
+### What Copilot found
+
+On Chunk 4.B's `should_mask(p_value, threshold)`, implemented as
+`return p_value <= threshold`: this looks equivalent to the coordinator's
+original `not (p_value > threshold)` gating for ordinary floats, but is
+not equivalent for NaN. Under IEEE 754 comparison rules, both
+`nan > threshold` and `nan <= threshold` are `False`. So the original
+code (`if pval_global > maskthreshold: <success> else: <masking>`) would
+take the masking branch for a NaN p-value (a real possibility from a
+degenerate fit), while `not should_mask(nan, threshold)` (`not (nan <=
+threshold)` = `not False` = `True`) would take the *success* branch
+instead - silently skipping masking/BumpHunter for a NaN fit result.
+
+### Verification performed before fixing
+
+Confirmed directly in Python rather than taking the claim on faith:
+`nan > 0.01` is `False` and `nan <= 0.01` is `False` too - so the two
+candidate implementations of `should_mask()` genuinely disagree for a
+NaN input: the buggy `p_value <= threshold` gives `False` (so `not
+should_mask(nan, t)` is `True`, taking the coordinator's success
+branch), while the correct `not (p_value > threshold)` gives `True` (so
+`not should_mask(nan, t)` is `False`, taking the masking branch) -
+matching what the original inline `if pval_global > maskthreshold:`
+would have done before Chunk 4 extracted it. Traced through
+`run_anaFit()`'s three call sites (`not should_mask(pval_global, ...)`,
+`not should_mask(pval_masked, ...)`, `dolimit and dosignal and not
+should_mask(pval_global, ...)`) to confirm all three would be affected
+identically by a NaN p-value with the buggy implementation.
+
+### Fix
+
+`python/run_masking.py`: `should_mask()` changed from `p_value <=
+threshold` to `not (p_value > threshold)` - byte-for-byte the
+coordinator's original gating condition, negated, with a comment
+explaining why the two forms are not interchangeable. This is not a
+convention change (both forms give identical results for every ordinary
+float); it only changes behavior for NaN, which is exactly the point.
+
+`tests/test_run_masking.py`:
+`test_should_mask_treats_nan_p_value_as_requiring_masking` added -
+asserts `should_mask(float("nan"), 0.01) is True`, which fails against
+the old `p_value <= threshold` implementation (confirmed by the Python
+check above) and passes against the fix.
+
+### Verification performed
+
+- `python -m pytest tests/test_run_masking.py -v -k should_mask` → 4
+  passed (3 pre-existing cases plus the new NaN case).
+- `python -m pytest tests/test_run_masking.py tests/test_run_anaFit.py -v`
+  → 34 passed (33 + 1 new test).
+- `python scripts/quality_check.py --mode full` → 143 passed, 2
+  deselected; ruff clean; black clean (18 files unchanged).
+- `python -m pytest tests/test_analysis_workflows_integration.py -m "integration and requires_root" -v`
+  → 1 passed in 117.12s - the real J100/J50 pipeline, rerun as
+  supplementary confirmation since this touches the exact masking
+  predicate at the heart of the coordinator's branch logic (matching the
+  same judgment call made for Chunk 1.B and Chunk 3.B); the canonical
+  workflows produce well-behaved, non-NaN p-values, so this confirms the
+  non-NaN path is unaffected by the fix, as expected.
+- `git diff --check` → passed.
+
+### Scope
+
+Only `python/run_masking.py` and `tests/test_run_masking.py` touched.
+Not folded into any later chunk's work - a review finding on already-
+pushed Chunk 4 work, fixed immediately as its own commit, per this
+project's established practice for Copilot review findings.
