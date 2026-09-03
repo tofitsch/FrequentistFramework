@@ -5633,3 +5633,476 @@ Only `python/run_fit.py` and `tests/test_run_fit.py` touched. Not folded
 into Chunk 8 - a review finding on already-pushed Chunk 6 work, fixed
 immediately as its own commit, per this project's established practice
 for Copilot review findings.
+
+## 2026-09-03: Tier-3 refactoring — Chunk 8: coordinator slimming and dependency-direction verification
+
+### Objective
+
+With Chunks 1-7 done (all seven module extractions complete, plus four
+GitHub Copilot review-finding fixes), verify `run_anaFit()` now reads as
+an orchestration of calls into the seven new modules, not a container for
+their logic, and register `python/run_anaFit.py` itself with the Tier 2
+quality gate. Per the plan, this is a checkpoint, not a new extraction -
+no new target function exists, so guardrail 3's characterization-first
+pattern does not apply; there is nothing new to characterize before
+modifying, only a verification pass over work already characterized and
+extracted in Chunks 1-7. Delivered as a single commit.
+
+### Re-read of `run_anaFit.py` top to bottom
+
+Confirmed the file contains only: imports, `run_anaFit()`, `main()`, and
+the `if __name__ == "__main__":` guard - no extracted logic was copied
+rather than moved, and no partial extractions remain. Verified formally
+via the plan's own acceptance-check script (below).
+
+### Dead imports removed (live gate failures once registered)
+
+Registering `python/run_anaFit.py` in `python_targets` for the first time
+surfaced imports that were dead but never checked while the file was
+un-gated - the same "deferred to Chunk 8" imports named explicitly across
+Chunks 3.B (`hashlib`, `platform`), 5.B (`re`), and implicitly since
+7.B (`argparse`), plus one found only now:
+- `re`, `argparse`, `subprocess`, `hashlib`, `platform`, and
+  `from pathlib import Path` - all confirmed dead by grepping for every
+  live (non-comment) use in the file; none found. Removed.
+- `execute_required` (imported from `run_execution`, alongside `execute`)
+  - confirmed dead: `run_anaFit.py` itself only ever calls `execute(...)`
+    directly (for the quickLimit command); `execute_required` is used
+    inside the sub-modules (`run_masking.py`, `run_templates.py`,
+    `run_fit.py`), not the coordinator. This has been dead since
+    Chunk 1.B's own extraction, simply never linted until now. Removed.
+- `covariancedict = None` in `main()` - a local variable assigned but
+  never used or passed to `run_anaFit()` (confirmed: `main()`'s call to
+  `run_anaFit()` never includes `covariancedict=...`). This pairs with a
+  pre-existing, still-commented `#if args.covariancefile: ...` stub for a
+  CLI flag that was never actually added to `run_cli.py`'s
+  `build_arg_parser()` - an unimplemented feature stub, not something
+  Tier 3 is building out (out of scope per Section 3). Removed the dead
+  assignment; left the commented stub as-is with an explanatory comment
+  added above it, rather than deleting a decade-old TODO-shaped comment
+  outright.
+
+`os`, `sys`, `shutil`, `json`, and every `from run_*` import were
+confirmed live (each has at least one real call site) and kept unchanged.
+
+### Ruff/Black fixes required to register the file (mechanical, zero behavior change)
+
+First time this exact code (the original coordinator, minus what Chunks
+1-7 already moved out) was ever lint-checked:
+- Import block sorted/blank-line-separated (`I001`, auto-fixed).
+- A literal tab character mixed with spaces in one indented comment line
+  (`if sigwidth == -999: <TAB><SPACES># poi=...`) and in one closing-paren
+  line of a multi-line call (seven literal tabs before the paren) -
+  both replaced with plain spaces (`W191`/`E101`).
+- All `W291`/`W293` trailing/blank-line whitespace, auto-fixed.
+- One genuinely dead local variable (`covariancedict`, `F841`) - removed,
+  as above.
+- Several long-line (`E501`) findings:
+  - Two long "####...####" debug `print(...)` banner strings and three
+    already-commented-out dead-code lines (a `shutil.copy2` pair, a
+    `FindBHWindow.py` invocation, and one line of a commented-out `sed`
+    command block) marked `# noqa: E501` rather than reformatted, per the
+    same precedent established in Chunk 6.B's `run_fit.py` - preserving
+    live debug output and dead-code text verbatim rather than rewriting
+    strings for a line-length rule.
+  - Two genuinely long *live* lines given real wraps, both verified
+    byte-identical to the original by direct comparison in a Python shell
+    before applying: the `maskrange=(int(...), int(...))` kwarg (split
+    across three lines) and the live `quickLimit` command string
+    (rewritten via implicit adjacent-string-literal concatenation,
+    mirroring the identical technique already used for
+    `run_fit.py`'s `xmlreader_command`/`quickfit_command` in Chunk 6.B
+    and the Copilot-fix commit for `xmlreader_command`). The still-
+    commented-out `#rtv=execute(...)` sibling line (the disabled
+    `timeout --foreground 1800` variant) was left as dead-code text with
+    `# noqa: E501`, not touched.
+- `python -m black python/run_anaFit.py`: one further, large
+  whitespace-only reformat - this file's original formatting (comma-
+  packed single-line imports, tight `key=value` spacing, unindented
+  multi-line call continuations) had never been through `black` before,
+  unlike every other module extracted so far, which each got this same
+  one-time reformat pass when first registered (Chunks 3.B, 5.B, 6.B,
+  7.B). No `ast` diff beyond whitespace/formatting - confirmed by all
+  tests below passing unchanged before and after.
+
+### Acceptance check (run verbatim from the plan)
+
+```
+$ wc -l python/run_anaFit.py
+292 python/run_anaFit.py
+
+$ python -c "import ast, pathlib; tree = ast.parse(pathlib.Path('python/run_anaFit.py').read_text()); print(sorted({n.name for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}))"
+['main', 'run_anaFit']
+
+$ grep -rn "^from run_anaFit import\|^import run_anaFit" python/run_execution.py python/run_manifest.py python/run_provenance.py python/run_masking.py python/run_templates.py python/run_fit.py python/run_cli.py
+(no output - confirmed no reverse dependency)
+
+$ grep -n "python/run_anaFit.py" scripts/quality_check.py
+        "python/run_anaFit.py",
+```
+
+292 lines - larger than the plan's original "~60-100 lines" estimate
+(Section 4's draft written before Chunks 1-7's actual signatures/kwargs
+were known), but the acceptance check does not assert a line count, only
+that the AST contains exactly `{'main', 'run_anaFit'}` - satisfied. The
+extra size versus the estimate is legitimate orchestration: the masking
+branch (BumpHunter refit, XML template copying/blinding, second
+`build_fit_extract` call) and the quickLimit branch are real coordinator
+logic that stays in `run_anaFit()` by design (Chunks 1-7's scope was the
+seven named modules, not further decomposing the coordinator's own
+control flow), plus `main()`'s CLI wiring and the still-inline
+`--sysfile`-to-`systdict` logic (Chunk 7.B's own documented scope
+boundary).
+
+### Verification performed
+
+- `python -m pytest tests/test_run_anaFit.py -v` → 16 passed.
+- `python scripts/quality_check.py --mode full` → 158 passed, 2
+  deselected; ruff clean; black clean (23 files unchanged) - the first
+  time `run_anaFit.py` itself has ever passed this gate.
+- `python -m pytest tests/ -m "not requires_analysis_dependencies and not (integration and requires_root)" -v`
+  → 159 passed, 4 deselected. Section 2's original baseline (Chunk 0,
+  commit range start) was 120 passed under the same filter - comfortably
+  exceeds baseline plus the net new tests added across Chunks 1-8 and the
+  four Copilot-fix commits.
+- `python -m pytest tests/test_repo_utils.py -m "requires_analysis_dependencies" -v`
+  → 2 passed.
+- `python -m pytest tests/test_analysis_workflows_integration.py -m "integration and requires_root" -v`
+  → 1 passed in 152.04s, matching the frozen reference exactly - mandatory
+  for this chunk per Section 7 (explicitly named alongside Chunks 4, 5,
+  and always before 12).
+- `git diff --check` → passed.
+- `git status` → only `python/run_anaFit.py` and `scripts/quality_check.py`
+  modified; no untracked repository-root artifacts from test execution.
+
+### Compliance review (Section 8, Verification checklist)
+
+1. Chunk 8 - a checkpoint/verification commit, not a characterization-
+   then-extraction pair; no Step A/Step B split applies (guardrail 3
+   explicitly does not apply here, per the plan's own Chunk 8 text).
+2. `run_anaFit.py` re-read top to bottom; contains only imports,
+   `run_anaFit()`, `main()`, and the `__main__` guard - confirmed by the
+   plan's own AST-based acceptance check.
+3. No dependency-direction violation: none of the seven extracted modules
+   imports back from `run_anaFit.py` (confirmed by grep, above).
+4. `python/run_anaFit.py` registered in `scripts/quality_check.py`'s
+   `python_targets`; full gate passes with zero remaining findings in the
+   coordinator itself.
+5. Every fix in this commit is either a proven-dead-code removal (grepped
+   for zero live uses before removing) or a proven byte-identical
+   reformat/wrap (verified in a Python shell before applying, or a pure
+   whitespace/import-order `black`/`ruff --fix` pass) - no behavior
+   change; confirmed by the coordinator's own 16 tests and the full
+   159-test suite passing unchanged.
+6. Only this chunk's two changed files were staged.
+7. All required Section 7 gates ran, including the mandatory integration
+   gate, which passed and matched the frozen reference (above).
+8. `git diff --check` passed; no untracked artifacts remain.
+9. This activity-log entry appended (not a rewrite of any existing
+   section).
+10. Chunks 9 through 12 remain open, listed below.
+11. No other branch's Tier 3 work was consulted.
+
+### Remaining open chunks
+
+Chunks 9 through 12 in `doc/TIER3_COMPLETION_PLAN.md` are open. All eight
+module-extraction and coordinator-slimming chunks (1-8) are now complete
+and verified.
+
+## 2026-09-03: Tier-3 refactoring — Chunk 9.A: characterization tests for `plot_minuit_continuous`
+
+### Objective
+
+Pin down the current, unmodified behavior of `plot_minuit_continuous()`
+in `plot_edm.py` (repository root) before splitting it into
+`parse_minuit_edm_log()` and `plot_minuit_edm_trace()`, per
+`doc/TIER3_COMPLETION_PLAN.md` Chunk 9. `plot_edm.py` has no existing
+tests at all, so this is a first-ever characterization, not a relocation.
+
+### A discrepancy between the plan and the actual dev environment, found before writing any test
+
+The plan's Section 4.2 import-placement table lists `plot_edm.py` as
+"already ROOT-free — matplotlib only" and places its imports "top-level"
+- implicitly assuming matplotlib (and, transitively, the also-imported
+`numpy`) is available wherever this file's tests run. Checked directly:
+neither `matplotlib` nor `numpy` is installed in this repository's dev
+venv, and neither appears in `requirements-dev-lock.txt` or
+`requirements-dev.txt`. Confirmed by direct attempt:
+`python -c "import matplotlib.pyplot"` and `python -c "import numpy"`
+both raise `ModuleNotFoundError`, and `import plot_edm` itself fails at
+module level for the same reason - **the current dev venv cannot import
+this file at all**, today, regardless of any refactor.
+
+This is the same situation this plan has already handled for ROOT
+throughout Chunks 3, 5, and 6: `plot_edm.py` is only ever invoked as a
+subprocess from within the LCG/CVMFS scientific environment (see
+`run_fit.py`'s `execute("python plot_edm.py %s %s" % (logfile,
+edmplot))` call) - the same environment that provides ROOT, not the
+pytest dev venv. The plan's "top-level" placement note for this file's
+imports is therefore corrected here: **Step B will defer `import
+matplotlib.pyplot as plt` inside `plot_minuit_edm_trace()`** (the one
+function that touches it), matching the import-placement rule already
+applied to every ROOT-touching function elsewhere in this plan, not left
+top-level as the draft table said. This test file stubs
+`sys.modules["matplotlib"]`/`["matplotlib.pyplot"]`/`["matplotlib.cm"]`/
+`["numpy"]` the same way `test_run_anaFit.py`/`test_run_provenance.py`
+already stub `ROOT`, so these characterization tests exercise real,
+verifiable behavior (see below) without needing matplotlib installed.
+
+### A second discrepancy: two of the three top-level imports are already dead
+
+`import numpy as np` and `import matplotlib.cm as cm` are both present in
+`plot_edm.py` today but neither `np.` nor `cm.` appears anywhere in the
+function body - confirmed by direct grep. Only `matplotlib.pyplot` (as
+`plt`) is actually used. Noted here for Step B (removing genuinely dead
+imports on newly-registered files is this project's established
+practice, e.g. Chunk 8's `run_anaFit.py` cleanup) rather than acted on in
+this characterization-only commit.
+
+### Target function (as it exists today)
+
+| Function | Inputs | Outputs | Side effects |
+|---|---|---|---|
+| `plot_minuit_continuous(filename, outname)` | `filename: str` (quickFit log path), `outname: str` | `None` | reads `filename`; prints "Error: The file was not found." and `sys.exit(1)` if missing; prints "No matching data found." and returns early if the log has no Minuit trace lines; otherwise builds and saves a matplotlib figure to `outname` via `plt.savefig(outname, bbox_inches="tight")` |
+
+### How the fake `matplotlib.pyplot` was built, and what it actually proves
+
+The stub module records every `savefig(outname, **kwargs)` call and
+**actually writes bytes to `outname`** (a real file, not just a recorded
+call), so file-existence/non-emptiness assertions below are testing a
+real filesystem effect, not merely "the stub was invoked." Every other
+`pyplot` function used (`figure`, `plot`, `axhline`, `yscale`, `xscale`,
+`xlabel`, `ylabel`, `title`, `grid`, `legend`) is a permissive no-op,
+since their exact call arguments are not part of this file's documented
+external contract.
+
+### Tests added (`tests/test_plot_edm.py`, new file)
+
+- `test_plot_minuit_continuous_produces_output_file_for_log_with_trace_lines` -
+  a small synthetic log with four matching `VariableMetricBuilder ... -
+  FCN = ... Edm = ... NCalls` lines (including two with internal
+  iteration `0`, to exercise the star-index branch); asserts the output
+  file exists, is non-empty, and that `savefig` was called with exactly
+  `(outname, {"bbox_inches": "tight"})`.
+- `test_plot_minuit_continuous_produces_output_for_real_quickfit_log` -
+  uses the real, already-committed
+  `run/fits/J100/run_481_3000_sixPar/quickFitLog_anaFit_sixPar_bkgOnly.log`
+  fixture the plan calls out explicitly; asserts a non-empty output file
+  is produced from genuine production log data, not just a synthetic one.
+- `test_plot_minuit_continuous_no_output_when_no_matching_lines` - a log
+  with no matching trace lines; asserts no exception, no output file
+  created, `savefig` never called, and `"No matching data found."`
+  actually printed (not just "does not raise").
+- `test_plot_minuit_continuous_exits_with_status_1_for_missing_file` - a
+  nonexistent input path; asserts `SystemExit` with `.code == 1`,
+  `savefig` never called, and `"Error: The file was not found."` actually
+  printed.
+
+The regex-parsed values used in the synthetic-log test (`cumulative_x`,
+`edm_values`, `star_indices`) were verified directly in a Python shell
+against the real `pattern.search(...)` regex before being relied on in
+the fixture, rather than hand-derived (the lesson already learned the
+hard way in Chunk 5.A).
+
+### What this commit does NOT do
+
+No production file was modified. `git status --short` shows only
+`tests/test_plot_edm.py` as untracked (new); `plot_edm.py` itself is
+absent from `git diff --stat` because it was never touched. The new test
+file is **not yet** registered in `scripts/quality_check.py` - per the
+plan, that happens in Step B alongside `plot_edm.py` itself.
+
+### Verification performed
+
+- `python -m pytest tests/test_plot_edm.py -v` → 4 passed, run against
+  the unmodified `plot_edm.py`.
+- `python scripts/quality_check.py --mode full` → 158 passed, 2
+  deselected; ruff clean; black clean (23 files unchanged) - unaffected,
+  confirming the new file doesn't touch anything already gated.
+- `python -m ruff check tests/test_plot_edm.py` /
+  `python -m black --check tests/test_plot_edm.py` → both clean already
+  (run ahead of Step B's registration, so the file starts clean).
+- `git diff --check` → passed.
+- `grep -nE '[[:blank:]]+$' tests/test_plot_edm.py` → no output.
+
+### Compliance review (Section 8, Characterization checklist)
+
+1. Chunk 9, Step A.
+2. `plot_edm.py` untouched; only `tests/test_plot_edm.py` (new, untracked)
+   added.
+3. Every new test asserts real, specific behavior (exact `savefig` call
+   arguments, exact printed messages, exact exit code) - not merely "does
+   not raise."
+4. Tests were run against the unmodified target file before any
+   production change; results reported in full above for review.
+5. Human-verification checkpoint: presented to the user in session for
+   confirmation before Step B's commit is made (recorded per Step B's own
+   activity-log entry once given).
+
+### Remaining open chunks
+
+Chunk 9.B (extraction of `parse_minuit_edm_log`/`plot_minuit_edm_trace`)
+and Chunks 10 through 12 are open.
+
+## 2026-09-03: Tier-3 refactoring — Chunk 9.B: extract `parse_minuit_edm_log`/`plot_minuit_edm_trace`
+
+### Objective
+
+Split `plot_minuit_continuous()`, characterized in Chunk 9.A (commit
+`de11262`), into `parse_minuit_edm_log()` (log parsing) and
+`plot_minuit_edm_trace()` (matplotlib rendering), per
+`doc/TIER3_COMPLETION_PLAN.md` Chunk 9 - separating pure, trivially
+unit-testable logic from rendering that needs matplotlib.
+
+### What changed
+
+- `plot_edm.py`:
+  - `parse_minuit_edm_log(filename)` (new) - the regex-parsing loop,
+    moved verbatim, returning `(cumulative_x, edm_values, star_indices)`.
+    **Decision required by the plan and recorded here** (to be folded
+    into `doc/TIER3_SYSTEM.md` at Chunk 12): the original function caught
+    `FileNotFoundError` itself and called `sys.exit(1)`; this function
+    instead lets `FileNotFoundError` propagate naturally from `open(...)`
+    - a pure, directly-callable function should not terminate the whole
+    process, and doing so made it awkward to test (every caller would
+    need `pytest.raises(SystemExit)` instead of a plain, specific
+    exception type). `plot_minuit_continuous()` (below) is the thin
+    CLI-facing wrapper that still does the print + `sys.exit(1)`,
+    preserving the exact external behavior Chunk 9.A characterized.
+  - `plot_minuit_edm_trace(cumulative_x, edm_values, star_indices,
+    outname)` (new) - the rendering code, moved verbatim, including the
+    "No matching data found." early return (moved here per the plan's own
+    target-decomposition table) and every commented-out dead line
+    (`#    plt.xscale('log')`, the three commented `#print(...)`
+    diagnostics, etc.), preserved exactly.
+  - `plot_minuit_continuous(filename, outname)` - now a thin orchestrator:
+    calls `parse_minuit_edm_log()`, catching `FileNotFoundError` to
+    reproduce the original print + `sys.exit(1)`, then calls
+    `plot_minuit_edm_trace()`. Signature unchanged, per the plan.
+  - `import matplotlib.pyplot as plt` deferred inside
+    `plot_minuit_edm_trace()`, **placed after the empty-data early
+    return**, not before it - a placement choice beyond what Chunk 9.A's
+    entry committed to: it means the "no matching data" path through
+    `plot_minuit_edm_trace()` (and, transitively, through
+    `plot_minuit_continuous()`) needs **zero** matplotlib stubbing, not
+    just `parse_minuit_edm_log()`. Confirmed directly: `import plot_edm`
+    and calling `plot_edm.plot_minuit_edm_trace([], [], [], path)` both
+    succeed with no `sys.modules` stubbing at all, verified before
+    committing.
+  - `import matplotlib.cm as cm` and `import numpy as np` removed - both
+    confirmed dead in Chunk 9.A's entry (zero live uses), and this is the
+    first time the file is lint-checked.
+  - One `E501` fix: the regex pattern literal wrapped across two raw
+    string literals (verified byte-identical `.pattern` before applying).
+  - `python -m black plot_edm.py`: one further, first-ever reformat pass
+    (quote style, argument wrapping) - matching every other
+    newly-registered file in this plan.
+- `tests/test_plot_edm.py`: rewritten - the module-loading helper that
+  stubbed `matplotlib`/`numpy` in `sys.modules` before `exec_module`-ing
+  the file is **gone entirely**, replaced with a plain `import plot_edm`
+  at the top of the file - the concrete testability payoff the plan
+  promised for this decomposition. Only the two tests that actually reach
+  `plot_minuit_edm_trace()`'s non-empty-data path still stub
+  `matplotlib`/`matplotlib.pyplot` (via a smaller, module-scoped
+  `_stub_matplotlib()` helper, `matplotlib.cm` no longer stubbed since
+  it's no longer imported); the other five tests - both empty-data paths,
+  both `parse_minuit_edm_log()` failure/empty cases, and the
+  missing-file/`SystemExit` case - now run with zero stubbing.
+- `scripts/quality_check.py`: registers `plot_edm.py` (in `python_targets`,
+  at repository-root path, not under `python/`) and `tests/test_plot_edm.py`.
+
+### Necessary test-relocation adaptation and new coverage (guardrail 4)
+
+Chunk 9.A's four tests were adapted, not moved wholesale - the module-
+loading mechanism itself changed (see above), and one test
+(`test_plot_minuit_continuous_no_output_when_no_matching_lines`) dropped
+its `matplotlib` stub entirely as a direct, intended consequence of the
+import-placement decision. No assertion or expected value changed from
+Chunk 9.A. Five new tests were added for the two newly-introduced
+functions, per guardrail 4:
+- `parse_minuit_edm_log()`: exact-tuple success case (reusing Chunk 9.A's
+  already-verified synthetic-log values), empty-result case, and the
+  `FileNotFoundError`-propagates case (the decision above).
+- `plot_minuit_edm_trace()`: non-empty-data success case (asserts the
+  exact `savefig` call, same as the orchestrator-level test) and the
+  empty-data early-return case (asserts the message and that no file is
+  created, with zero stubbing).
+
+### Verification performed
+
+- `python -m pytest tests/test_plot_edm.py -v` → 9 passed (4 adapted from
+  Chunk 9.A plus 5 new).
+- `python scripts/quality_check.py --mode full` → 167 passed, 2
+  deselected; ruff clean; black clean (25 files unchanged).
+- `git diff --check` → passed.
+- No integration-gate rerun: `plot_edm.py`'s output is a diagnostic plot,
+  already outside the scientific-acceptance artifact contract per the
+  2026-08-20 "Plotting separated from scientific acceptance" entry,
+  matching the plan's own explicit acceptance-check note for this chunk.
+
+### Compliance review (Section 8, Extraction checklist)
+
+1. Chunk 9, Step B (this entry) - the plan's first non-`run_anaFit.py`
+   extraction.
+2. Step A is committed (`de11262`) and referenced above.
+3. No scientific constants, references, tolerances, dependency revisions,
+   or canonical workflow arguments touched.
+4. Relocated tests' diffs are not import-line-only - the module-loading
+   mechanism itself changed (real `import plot_edm` instead of
+   `exec_module`-with-stubbing), and one test's stub was dropped entirely
+   as a direct, documented consequence of the import-placement decision;
+   no assertion or expected value changed from Chunk 9.A.
+5. Both new functions are covered: `parse_minuit_edm_log()` (3 tests:
+   success, empty, failure) and `plot_minuit_edm_trace()` (2 tests:
+   success, empty).
+6. Confirmed by grep: `plot_edm.py`'s `plot_minuit_continuous()` calls
+   both new functions and defines nothing else duplicating their logic.
+7. Only this chunk's three changed files were staged.
+8. All required Section 7 gates ran; the integration gate's inapplicability
+   to this chunk is explicit in the plan itself, not a judgment call made
+   here.
+9. `git diff --check` passed.
+10. This activity-log entry appended (not a rewrite of any existing
+    section).
+11. Chunks 10 through 12 remain open, listed below.
+12. No other branch's Tier 3 work was consulted.
+
+### Remaining open chunks
+
+Chunks 10 through 12 in `doc/TIER3_COMPLETION_PLAN.md` are open.
+
+## 2026-09-03: Correction — Chunk 9.B entry miscounted matplotlib-stubbing tests (GitHub Copilot review, PR #6)
+
+### What Copilot found
+
+The Chunk 9.B entry above (`tests/test_plot_edm.py` bullet) says "the
+two tests that actually reach `plot_minuit_edm_trace()`'s non-empty-data
+path still stub `matplotlib`/`matplotlib.pyplot` ... the other five tests
+... now run with zero stubbing." Checked directly against
+`tests/test_plot_edm.py` as committed: `_stub_matplotlib(monkeypatch)` is
+called by **three** tests
+(`test_plot_minuit_edm_trace_produces_output_file_for_non_empty_data`,
+`test_plot_minuit_continuous_produces_output_file_for_log_with_trace_lines`,
+`test_plot_minuit_continuous_produces_output_for_real_quickfit_log`), not
+two - confirmed by grepping the test file for the call site (three
+matches). The remaining **six** tests (not five) run with zero stubbing.
+Three plus six correctly sums to the file's actual nine tests; two plus
+five does not (seven), which is itself a smaller internal inconsistency
+in the original entry, also caught by this same review comment.
+
+### Correction
+
+The counts should read: **three** tests stub matplotlib (the two
+`plot_minuit_continuous(...)` tests that reach real trace data, plus
+`test_plot_minuit_edm_trace_produces_output_file_for_non_empty_data`
+directly), and the other **six** tests - both `plot_minuit_edm_trace()`/
+`plot_minuit_continuous()` empty-data paths, all three
+`parse_minuit_edm_log()` cases (success, empty, missing-file), and the
+`plot_minuit_continuous()` missing-file/`SystemExit` case - run with zero
+stubbing.
+
+This is a correction to prose in the Chunk 9.B entry's own description of
+already-committed, unchanged test code - no test or production file was
+touched to produce this finding or this correction. Per the activity
+log's append-only guardrail, the original entry is left exactly as
+written above; this section is the correction of record.
