@@ -6,122 +6,14 @@ import json
 import hashlib
 import platform
 from pathlib import Path
-from ExtractPostfitFromWS import PostfitExtractor
-from ExtractFitParameters import FitParameterExtractor
 from run_execution import execute, execute_required
 from run_manifest import write_analysis_results
 from run_masking import run_bumphunter, should_mask
 from run_provenance import build_analysis_provenance
 from run_templates import prepare_run_templates, replaceinfile
-import ROOT
+from run_fit import build_fit_extract
+from run_cli import build_arg_parser, normalize_signal_name
 
-
-def build_fit_extract(topfile, datafile, datahist, rangelow, rangehigh, wsfile, fitresultfile, poi=None, maskrange=None):
-    xmlreader_command = (
-        'xmlAnaWSBuilder/build/bin/XMLReader -x %s '
-        '-o "logy integral" --minimizerStrategy 0'
-    ) % topfile
-    if not execute_required(
-        xmlreader_command,
-        "XMLReader workspace generation",
-        expected_outputs=[wsfile],
-    ):
-        raise RuntimeError("XMLReader workspace generation failed")
-    if poi:
-        print("Now running s+b quickFit")
-        _poi="-p %s" % poi
-        #bkgonly_opt = False
-    else:
-        print("Now running bkg-only quickFit")
-        _poi=""
-        #bkgonly_opt = True
-
-    if maskrange:
-        _range="--range SBLo_Run3TLA,SBHi_Run3TLA"
-        maskmin=maskrange[0]
-        maskmax=maskrange[1]
-        print(">>>>>>>>>>>>>>>>>>>>>>>>>> BH mask range: "+str(maskmin)+","+str(maskmax))
-    else:
-        _range=""
-        maskmin=-1
-        maskmax=-1
-        print(">>>>>>>>>>>>>>>>>>>>>>>>>> no BH mask range: setting to -1 both maskmin and maskmax!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-
-    logfile=fitresultfile.replace("FitResult","quickFitLog").replace(".root", ".log")
-    edmplot=fitresultfile.replace("FitResult","edm").replace(".root", ".pdf")
-
-    #print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! _poi is :"+str(_poi))
-    quickfit_command = "quickFit/build/quickFit --chi2fit 1 --poissonerror 1 -f %s -d combData %s --checkWS 1 --hesse 1 --savefitresult 1 --saveWS 1 --saveNP 1 --saveErrors 1 --minStrat 2 --nllOffset 0 --optConst 2 --GKIntegrator 1 --minTolerance 1E-6 %s -o %s > %s 2>&1" % (
-        wsfile,
-        _poi,
-        _range,
-        fitresultfile,
-        logfile,
-    )
-    if not execute_required(
-        quickfit_command,
-        "quickFit background or signal fit",
-        expected_outputs=[fitresultfile, logfile],
-    ):
-        raise RuntimeError("quickFit failed")
-
-    execute("python plot_edm.py %s %s" % (logfile, edmplot))
-
-    postfitfile=fitresultfile.replace("FitResult","PostFit")
-    parameterfile=fitresultfile.replace("FitResult","FitParameters")
-
-    f=ROOT.TFile(datafile)
-    d=f.Get(datahist)
-    datafirstbin=d.FindBin(rangelow)-1
-    f.Close()
-    
-    # Define resolution binning for BH
-    #binningFileName = f"/afs/cern.ch/user/l/lbazzano/WORK/tla/FrequentistFramework/Input/data/dijetisrTLA/mjjResolutionBinning_{rangelow}.root"
-    binningFileName = f"Input/data/dijetisrTLA/mjjResolutionBinning_{rangelow}.root"
-
-    print(binningFileName)
-    if not os.path.exists(binningFileName):
-        execute(f"python3 python/createBinning.py -s {rangelow} -e {rangehigh} -o {binningFileName}")
-
-    print("EXECUTE: pfe = PostfitExtractor(")
-    print("datafile=", datafile)
-    print("datahist=", datahist)
-    print("datafirstbin=", datafirstbin)
-    print("wsfile=", fitresultfile)
-        #rebinfile=f"/afs/cern.ch/user/l/lbazzano/WORK/tla/FrequentistFramework/Input/data/dijetisrTLA/mjjResolutionBinning_{rangelow}.root",
-    print("rebinfile=", f"Input/data/dijetisrTLA/mjjResolutionBinning_{rangelow}.root")
-    print("rebinhist=", "mjjBinning")
-    print("maskmin=", maskmin)
-    print("bkgonly=", True)
-    print(")")
-
-    pfe = PostfitExtractor(
-        datafile=datafile,
-        datahist=datahist,
-        datafirstbin=datafirstbin,
-        wsfile=fitresultfile,
-        #rebinfile=f"/afs/cern.ch/user/l/lbazzano/WORK/tla/FrequentistFramework/Input/data/dijetisrTLA/mjjResolutionBinning_{rangelow}.root",
-        rebinfile=f"Input/data/dijetisrTLA/mjjResolutionBinning_{rangelow}.root",
-        rebinhist="mjjBinning",
-        maskmin=maskmin,
-        maskmax=maskmax,
-        #bkgonly=bkgonly_opt
-        bkgonly=True
-    )
-    # If we used masking in a b-only fit then we need to calculate the p-val from the correctly normalized postfit distribution
-    if maskmin > -1 or maskmax > -1:
-        pval = pfe.GetPval("Run3TLA_bkgonly_rebinned") #should be Run3TLA or Run3TLA_rebinned?
-    else:
-        pval = pfe.GetPval("Run3TLA_rebinned") #should be Run3TLA or Run3TLA_rebinned?
-    
-    print("pfe.WriteRoot(", postfitfile, ", dirPerCategory=True)")
-    pfe.WriteRoot(postfitfile, dirPerCategory=True)
-    #pfe.WriteRoot(postfitfile) # this looks problematic
-
-    fpe = FitParameterExtractor(wsfile=fitresultfile)
-    fpe.WriteRoot(parameterfile)
-
-    return (pval, postfitfile, parameterfile)
 
 def run_anaFit(datafile,
                datahist,
@@ -310,36 +202,11 @@ def run_anaFit(datafile,
     return 0
 
 def main(args):
-    
-    parser = argparse.ArgumentParser(description='%prog [options]')
-    parser.add_argument('--datafile', dest='datafile', type=str, required=True, help='Input data file')
-    parser.add_argument('--datahist', dest='datahist', type=str, required=True, help='Input finebinned data histogram name')
-    parser.add_argument('--topfile', dest='topfile', type=str, required=True, help='Input top-level xml card')
-    parser.add_argument('--categoryfile', dest='categoryfile', type=str, required=True, help='Input category xml card')
-    parser.add_argument('--backgroundfile', dest='backgroundfile', type=str, help='Input background xml card')
-    parser.add_argument('--signalfile', dest='signalfile', default= None, type=str, help='Input signal xml card')
-    parser.add_argument('--wsfile', dest='wsfile', type=str, required=True, help='Output workspace file')
-    parser.add_argument('--outputfile', dest='outputfile', type=str, required=True, help='Output fitresult file')
-    parser.add_argument('--nbkg', dest='nbkg', type=str, required=True, help='Initial value and range of nbkg par (e.g. "2E8,0,3E8")')
-    parser.add_argument('--nsig', dest='nsig', type=str, default='0,-1E6,1E6', help='Initial value and range of nsig par (e.g. "0,-1E6,1E6")')
-    parser.add_argument('--rangelow', dest='rangelow', type=int, help='Start of fit range (in GeV)')
-    parser.add_argument('--rangehigh', dest='rangehigh', type=int, help='End Start of fit range (in GeV)')
-    parser.add_argument('--dosignal', dest='dosignal', action="store_true", help='Perform s+b fit (default: bkg-only)')
-    parser.add_argument('--dolimit', dest='dolimit', action="store_true", help='Perform limit setting')
-    parser.add_argument('--signame', dest='signame', type=str, help='Name of the signal parameter')
-    parser.add_argument('--sigmean', dest='sigmean', type=int, default=1000, help='Mean of signal Gaussian for s+b fit (in GeV)')
-    parser.add_argument('--sigwidth', dest='sigwidth', type=float, default=7., help='Width of signal Gaussian for s+b fit (in %). If -999 dealing with Zprime samples.')
-    parser.add_argument('--maskthreshold', dest='maskthreshold', type=float, default=0.01, help='Threshold of p(chi2) below which to run BH and mask the most significant window')
-    parser.add_argument('--doprefit', dest='doprefit', action="store_true", help='Perform ROOT prefit before quickFit')
-    parser.add_argument('--folder', dest='folder', type=str, default='run', help='Output folder to store configs and results (default: run)')
-    parser.add_argument('--sysfile', dest='sysfile', type=str, help='Path to json file containing signal systematics dict')
+
+    parser = build_arg_parser()
 
     args = parser.parse_args(args)
-    if not args.signame:
-        if args.sigwidth == -999:
-            args.signame="mR%s" % (args.sigmean)
-        else:
-            args.signame="mean%s_width%s" % (args.sigmean, args.sigwidth)
+    args.signame = normalize_signal_name(args.sigmean, args.sigwidth, args.signame)
 
     # create dir if not exists: https://stackoverflow.com/questions/273192/how-can-i-safely-create-a-nested-directory
     try: 

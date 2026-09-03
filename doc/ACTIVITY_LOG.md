@@ -4735,3 +4735,901 @@ Only `python/run_masking.py` and `tests/test_run_masking.py` touched.
 Not folded into any later chunk's work - a review finding on already-
 pushed Chunk 4 work, fixed immediately as its own commit, per this
 project's established practice for Copilot review findings.
+
+## 2026-09-03: Tier-3 refactoring — Chunk 6.A: characterization tests for `build_fit_extract`
+
+### Objective
+
+Pin down the current, unmodified behavior of `build_fit_extract()` in
+`python/run_anaFit.py` before extracting it into `run_fit.py`, per
+`doc/TIER3_COMPLETION_PLAN.md` Chunk 6.
+
+### Pre-change state
+
+Two failure-path tests already existed
+(`test_build_fit_extract_stops_after_xmlreader_failure`,
+`test_build_fit_extract_stops_after_quickfit_failure`), both passing
+unmodified. Per the plan's Section 2 baseline, these only cover the two
+`execute_required` failure branches — no test exercised the successful
+path at all: the `ROOT.TFile`/`FindBin` lookup for `datafirstbin`, the
+mask-range branch on the quickFit command, the `PostfitExtractor`/
+`FitParameterExtractor` calls, or the p-value-source selection between
+`Run3TLA_rebinned` and `Run3TLA_bkgonly_rebinned`.
+
+### Target function — inputs and outputs (as it exists today)
+
+| Function | Inputs | Outputs | Side effects |
+|---|---|---|---|
+| `build_fit_extract(topfile, datafile, datahist, rangelow, rangehigh, wsfile, fitresultfile, poi=None, maskrange=None)` | as listed | `(pval: float, postfitfile: str, parameterfile: str)` | runs XMLReader + quickFit subprocesses; writes ROOT files; may generate a resolution-binning file; shells out to `plot_edm.py` |
+
+### Tests added
+
+- `test_build_fit_extract_succeeds_for_unmasked_fit` — drives the full
+  successful path with `maskrange=None` using controlled test doubles
+  (`_FakeTFile`/`_FakeHist` for the `ROOT.TFile`/`FindBin` lookup,
+  `_FakePostfitExtractor`, `_FakeFitParameterExtractor`); asserts the
+  returned `(pval, postfitfile, parameterfile)` tuple, that `maskmin`/
+  `maskmax` reach `PostfitExtractor` as `-1`/`-1`, that
+  `GetPval("Run3TLA_rebinned")` is the p-value source used, that
+  `plot_edm.py` is shelled out to via a plain `execute()` (not
+  `execute_required()`, so its result is discarded), and that
+  `datafirstbin` is computed as `FindBin(rangelow) - 1` from the fake
+  histogram.
+- `test_build_fit_extract_succeeds_for_masked_fit` — same doubles with
+  `maskrange=(500, 600)`; asserts `--range SBLo_Run3TLA,SBHi_Run3TLA`
+  reaches the actual quickFit command string, that `maskmin`/`maskmax`
+  reach `PostfitExtractor` as `500`/`600`, and that
+  `GetPval("Run3TLA_bkgonly_rebinned")` (the renormalized source) is
+  selected instead of the unmasked one.
+
+Both new tests force `os.path.exists()` to `True` via `monkeypatch` so
+the resolution-binning-file branch (`createBinning.py`) is deterministic
+and independent of what happens to already exist on disk for
+`rangelow=481` — a real fixture file for that range exists in the
+repository, which would otherwise make the test's behavior depend on
+filesystem state rather than the code path under test.
+
+### What this commit does NOT do
+
+No production file was modified. `git diff --stat -- python/` was empty
+throughout this change — only `tests/test_run_anaFit.py` was touched.
+
+### Verification performed
+
+- `python -m pytest tests/test_run_anaFit.py -v -k build_fit_extract` →
+  4 passed (2 pre-existing failure-path cases plus the 2 new
+  successful-path cases), run against the unmodified
+  `python/run_anaFit.py`.
+- `python -m pytest tests/test_run_anaFit.py -v` → 19 passed (full-file
+  regression check).
+- `python scripts/quality_check.py --mode full` → 145 passed, 2
+  deselected; ruff clean; black clean (18 files unchanged) — one ruff
+  F841 (unused `executed_commands` in the masked test) and one black
+  reformat (long `monkeypatch.setattr(... raising=False)` line) were
+  found and fixed while preparing this commit, both confined to the new
+  test code itself.
+- `git diff --stat` → only `tests/test_run_anaFit.py` touched.
+- `git diff --check` → passed.
+- `grep -nE '[[:blank:]]+$' tests/test_run_anaFit.py` → no output.
+
+### Compliance review (Section 8, Characterization checklist)
+
+1. Chunk 6, Step A.
+2. `git diff --stat` shows only `tests/test_run_anaFit.py` — zero
+   production files touched.
+3. Both new tests assert the real, specific successful-path shape
+   (return tuple, exact kwargs reaching the collaborators, exact p-value
+   source string selected), not merely "does not raise."
+4. Tests were run against the unmodified target file before any
+   production change; results reported in full above for review.
+5. Human-verification checkpoint: presented to the user in session for
+   confirmation before Step B's commit is made (recorded per Step B's own
+   activity-log entry once given).
+
+### Remaining open chunks
+
+Chunk 6.B (extraction of `run_fit.py`) and Chunks 7 through 12 are open.
+
+## 2026-09-03: Tier-3 refactoring — Chunk 6.B: extract `run_fit.py`
+
+### Objective
+
+Move `build_fit_extract()`, characterized in Chunk 6.A (commit
+`e8f5467`), out of `run_anaFit.py` into a new `python/run_fit.py`, per
+`doc/TIER3_COMPLETION_PLAN.md` Chunk 6.
+
+### What changed
+
+- `python/run_fit.py` created with `build_fit_extract()`, moved verbatim
+  in logic and comments (including the commented-out dead alternatives -
+  the `#bkgonly_opt` lines, the two commented-out `rebinfile=` variants,
+  and the `#pfe.WriteRoot(postfitfile)` line). `from run_execution import
+  execute, execute_required` at module level (flat sibling-import style)
+  - the module needs both: `execute` for the `plot_edm.py` diagnostic
+    call and the conditional `createBinning.py` call; `execute_required`
+    for XMLReader and quickFit.
+  - `import ROOT`, `from ExtractPostfitFromWS import PostfitExtractor`,
+    `from ExtractFitParameters import FitParameterExtractor` are deferred
+    inside `build_fit_extract` itself, placed immediately before the
+    first `ROOT.TFile(...)` line - i.e. after both `execute_required`
+    calls have already succeeded, matching the plan's import-placement
+    rule. This is why the two failure-path tests (`_stops_after_
+    xmlreader_failure`, `_stops_after_quickfit_failure`) need zero
+    ROOT/sibling-module stubbing in their relocated form - both return
+    before reaching the deferred import.
+- `python/run_anaFit.py`: `build_fit_extract()`'s 106-line definition
+  removed; `from ExtractPostfitFromWS import PostfitExtractor`, `from
+  ExtractFitParameters import FitParameterExtractor`, and `import ROOT`
+  removed from the top-level import block (confirmed by `grep -n "ROOT\.
+  \|PostfitExtractor\|FitParameterExtractor" python/run_anaFit.py`
+  before editing that every remaining reference to all three was inside
+  the function being moved - none survive elsewhere in the coordinator).
+  Replaced with `from run_fit import build_fit_extract` (flat
+  sibling-import style). The two `run_anaFit()` call sites
+  (`pval_global, ... = build_fit_extract(...)` and `pval_masked,_,_ =
+  build_fit_extract(...)`) are unchanged - same name, now resolved via
+  the import.
+- `tests/test_run_fit.py` created with the 4 tests from Chunk 6.A
+  (2 pre-existing failure-path, 2 new successful-path), relocated per the
+  Test Relocation Rule with two documented, necessary exceptions (below).
+- `scripts/quality_check.py`: added `python/run_fit.py` to
+  `python_targets` and `tests/test_run_fit.py` to `test_targets`.
+
+### Two Test Relocation Rule exceptions, both anticipated in Chunk 6.A and confirmed necessary
+
+1. **Cross-module patch target.** `execute`/`execute_required` live in
+   `run_execution.py`, a different module from where `build_fit_extract`
+   now lives. The relocated tests patch `run_fit.execute_required`/
+   `run_fit.execute` directly (via `monkeypatch.setattr(run_fit, ...)`),
+   not `module.execute_required` as in the old `test_run_anaFit.py`
+   version - the same necessary-consequence pattern already documented
+   for Chunk 4.B (`run_masking.execute_required`) and Chunk 1.B.
+2. **Deferred-import stubbing.** Because `ROOT`, `PostfitExtractor`, and
+   `FitParameterExtractor` are now imported inside `build_fit_extract`
+   itself rather than at module level, there is no `run_fit.ROOT`/
+   `run_fit.PostfitExtractor` attribute to patch directly (unlike the old
+   `test_run_anaFit.py` version, which patched attributes on the
+   `exec_module`-loaded coordinator object that already had these names
+   bound at import time). The two successful-path tests instead stub the
+   modules those deferred imports resolve against, via
+   `monkeypatch.setitem(sys.modules, "ROOT"/"ExtractPostfitFromWS"/
+   "ExtractFitParameters", fake_module)` - the same technique already
+   used for `run_provenance.collect_scientific_runtime`'s deferred
+   `import ROOT` (Chunk 3.A/3.B) and `run_templates._seed_prefit_
+   parameters`'s deferred `from PreFit import PreFitter` (Chunk 5.B). All
+   assertions and expected values carried over unchanged from Chunk 6.A -
+   only how the doubles are installed differs.
+
+The two failure-path tests needed **neither** exception - they still
+patch `run_fit.execute_required` only (exception 1 applies to both
+failure and success tests equally) and never reach the deferred
+ROOT/extractor imports at all, confirming the import placement is
+correct per the plan's own acceptance check.
+
+### Ruff/Black fixes required to register the new file (mechanical, zero behavior change)
+
+Registering `run_fit.py` in `python_targets` was the first time this
+exact code was lint-checked (it lived inside the un-gated
+`run_anaFit.py` before):
+- `def build_fit_extract(...)`'s 121-character single-line signature
+  wrapped to one parameter per line.
+- Two long `print(...)` string literals and the `quickfit_command`
+  format string wrapped using implicit adjacent-string-literal
+  concatenation - no change to the resulting string values.
+- The `execute(f"python3 python/createBinning.py ...")` call wrapped
+  across two lines (black then folded the two adjacent f-string literals
+  back onto one line, still under 100 columns).
+- Two `E501` findings on already-commented-out dead code
+  (`#binningFileName = f"/afs/.../lbazzano/..."`,
+  `#rebinfile=f"/afs/.../lbazzano/..."` x2) and one on a comment
+  containing a long already-commented-out `print(...)` call marked
+  `# noqa: E501` rather than reformatted, to avoid rewriting the exact
+  text of preserved dead code for a line-length rule that only applies to
+  live formatting; the "If we used masking..." comment was wrapped across
+  two lines instead, since it is prose, not preserved code/data.
+- `python -m black python/run_fit.py`: one further whitespace-only
+  reformat (operator spacing, e.g. `_poi="-p %s" % poi` ->
+  `_poi = "-p %s" % poi`).
+
+None of these touch `run_anaFit.py`, which remains outside
+`python_targets` (deferred to Chunk 8, per the established policy for
+this file's pre-existing dead imports).
+
+### Verification performed
+
+- `python -m pytest tests/test_run_fit.py -v` → 4 passed, in isolation.
+- `python -m pytest tests/test_run_fit.py tests/test_run_anaFit.py -v`
+  → 19 passed (4 + 15, matching the pre-move total of 19 exactly).
+- `python scripts/quality_check.py --mode full` → 145 passed, 2
+  deselected; ruff clean; black clean (20 files unchanged); exit code 0.
+- `python -m pytest tests/test_analysis_workflows_integration.py -m "integration and requires_root" -v`
+  → 1 passed in 118.72s - **mandatory** for this chunk (Section 7:
+  Chunks 4, 5, 8, and always before 12; this chunk rewrites the
+  coordinator's actual fit/masking call path), matched against the
+  frozen reference exactly.
+- `git diff --stat -- python/run_anaFit.py` → 111 lines changed (1
+  insertion, 110 deletions) - confirms only the import block and the
+  function body were touched, nothing in `run_anaFit()` itself.
+- `git diff --check` → passed (all trailing-whitespace hits are
+  pre-existing lines in `run_anaFit.py`'s untouched body, not part of
+  this diff).
+
+### Compliance review (Section 8, Extraction checklist)
+
+1. Chunk 6, Step B (this entry).
+2. Step A is committed (`e8f5467`) and referenced above.
+3. No scientific constants, references, tolerances, dependency revisions,
+   or canonical workflow arguments touched.
+4. Relocated tests' diffs are not import-line-only - two documented,
+   necessary exceptions (cross-module patch target; deferred-import
+   stubbing), both anticipated in Chunk 6.A; no assertion or expected
+   value changed from Chunk 6.A.
+5. `build_fit_extract` is covered by all 4 tests (2 failure-path,
+   2 successful-path, unmasked and masked).
+6. Confirmed by grep: `run_anaFit.py` actually imports and never
+   redefines `build_fit_extract`.
+7. Only this chunk's five changed/new files were staged.
+8. All required Section 7 gates ran and passed, including the mandatory
+   integration gate, output captured above.
+9. `git diff --check` passed.
+10. This activity-log entry appended (not a rewrite of any existing
+    section).
+11. Chunks 7 through 12 remain open, listed below.
+12. No other branch's Tier 3 work was consulted.
+
+### Remaining open chunks
+
+Chunks 7 through 12 in `doc/TIER3_COMPLETION_PLAN.md` are open.
+
+## 2026-09-03: Tier-3 refactoring — Chunk 7.A: characterization tests for `main()`'s argument parsing and signal-name defaulting
+
+### Objective
+
+Pin down the current, unmodified behavior of `main()`'s inline
+`argparse` setup and default-signame logic in `python/run_anaFit.py`
+before extracting them into `build_arg_parser()`/`normalize_signal_name()`
+in `run_cli.py`, per `doc/TIER3_COMPLETION_PLAN.md` Chunk 7. Neither
+target function exists yet, so - per Chunk 5.A's precedent - this logic
+is characterized indirectly, by calling the real `main()` (with
+`run_anaFit` monkeypatched to capture its kwargs) rather than by
+constructing a standalone parser that doesn't exist yet.
+
+### Pre-change state
+
+Only `test_main_propagates_analysis_status` touched `main()` before this
+commit, and only to confirm it returns `run_anaFit()`'s status - it never
+inspects parsed arguments or the derived `signame`. No dedicated test
+existed for the default-naming branch (normal width, the `sigwidth ==
+-999` Zprime branch, or the `7.0`-vs-`"7"` string-formatting quirk named
+explicitly in the plan's own Chunk 7 text as a known "clean-up" trap), nor
+for a representative full set of CLI flags parsing correctly.
+
+### Target functions (as they exist today, inline in `main()`)
+
+| Function-to-be | Inputs | Outputs | Side effects |
+|---|---|---|---|
+| `build_arg_parser()` | none | `argparse.ArgumentParser` | none |
+| `normalize_signal_name(sigmean, sigwidth, signame)` | `sigmean`, `sigwidth`, `signame` (possibly `None`/falsy) | `str` | none (pure) |
+
+### Tests added
+
+- `test_main_derives_default_signame_for_normal_width` — no `--signame`,
+  `sigmean=1200`, `sigwidth=8.5` -> `"mean1200_width8.5"`.
+- `test_main_preserves_integer_valued_float_width_in_default_signame` —
+  `--sigwidth` omitted (default `7.` = `7.0`) -> `"mean1000_width7.0"`,
+  pinning down the naive `"%s"`-style formatting the plan warns is easy to
+  accidentally "clean up" into `"%g"`-style formatting (which would
+  silently turn `7.0` into `7`) during extraction.
+- `test_main_uses_zprime_naming_when_sigwidth_is_minus_999` —
+  `sigwidth=-999`, `sigmean=1400` -> `"mR1400"`.
+- `test_main_respects_explicit_signame_override` — an explicit
+  `--signame` survives unchanged even when it doesn't match what the
+  default-naming logic would have derived for the same
+  `sigmean`/`sigwidth`.
+- `test_main_parses_representative_j100_style_invocation` — mirrors an
+  actual invocation shape from `scripts/run_anaFit_J100.sh`
+  (`backgroundfile`/`signalfile` present, no `--signame`/`--dosignal`/
+  `--dolimit`/`--doprefit`/`--sysfile`), asserting the full set of parsed
+  values (including defaults `nsig="0,-1E6,1E6"`, `dosignal=False`,
+  `dolimit=False`, `doprefit=False`, `systdict=None`) that reach
+  `run_anaFit()`.
+
+All five new tests pass `--folder` pointing at `tmp_path` to avoid the
+side effect of `main()`'s `os.makedirs(args.folder)` creating a real
+`run/` directory in the working tree (the pre-existing
+`test_main_propagates_analysis_status` already relies on the untouched
+default and was left as-is, per the Test Relocation Rule guidance below).
+
+### Test Relocation Rule check for `test_main_propagates_analysis_status`
+
+Per the plan's own explicit instruction: this test only exercises status
+propagation through `main()` end-to-end (`run_anaFit` fully mocked, no
+inspection of parsed arguments or `signame`) - it does not test parsing
+behavior directly. It therefore stays in `tests/test_run_anaFit.py` and
+is not moved to `tests/test_run_cli.py` in Step B.
+
+### What this commit does NOT do
+
+No production file was modified. `git diff --stat -- python/` was empty
+throughout this change - only `tests/test_run_anaFit.py` was touched (5
+new tests plus one shared capture helper, 220 lines).
+
+### Verification performed
+
+- `python -m pytest tests/test_run_anaFit.py -v -k main` → 7 passed (2
+  pre-existing status-propagation cases plus the 5 new parsing/naming
+  cases), run against the unmodified `python/run_anaFit.py`.
+- `python -m pytest tests/test_run_anaFit.py -v` → 20 passed (full-file
+  regression check).
+- `python scripts/quality_check.py --mode full` → 150 passed, 2
+  deselected; ruff clean; black clean (20 files unchanged).
+- `git diff --stat` → only `tests/test_run_anaFit.py` touched.
+- `git diff --check` → passed.
+- `grep -nE '[[:blank:]]+$' tests/test_run_anaFit.py` → no output.
+
+### Compliance review (Section 8, Characterization checklist)
+
+1. Chunk 7, Step A.
+2. `git diff --stat` shows only `tests/test_run_anaFit.py` - zero
+   production files touched.
+3. Each new test asserts the real, specific derived value (`signame`,
+   or the full set of parsed kwargs), not merely "does not raise."
+4. Tests were run against the unmodified target file before any
+   production change; results reported in full above for review.
+5. Human-verification checkpoint: presented to the user in session for
+   confirmation before Step B's commit is made (recorded per Step B's own
+   activity-log entry once given).
+
+### Remaining open chunks
+
+Chunk 7.B (extraction of `run_cli.py`) and Chunks 8 through 12 are open.
+
+## 2026-09-03: Tier-3 refactoring — Chunk 7.B: extract `run_cli.py`
+
+### Objective
+
+Move `main()`'s inline `argparse` setup and default-signame logic,
+characterized in Chunk 7.A (commit `9194c2a`), out of `python/run_anaFit.py`
+into a new `python/run_cli.py`, per `doc/TIER3_COMPLETION_PLAN.md`
+Chunk 7 - the plan's last extraction.
+
+### What changed
+
+- `python/run_cli.py` created with two functions:
+  - `build_arg_parser()` - the 22 `parser.add_argument(...)` calls, moved
+    verbatim (same flags, dests, types, defaults, help text, including the
+    `default= None` stray-space quirk on `--signalfile`), wrapped in a
+    thin function that returns the constructed parser instead of leaving
+    it inline in `main()`.
+  - `normalize_signal_name(sigmean, sigwidth, signame)` - the
+    `if not args.signame: ...` default-naming block, moved verbatim and
+    made pure (takes/returns `signame` instead of mutating `args`).
+- `python/run_anaFit.py`: the 22-line `parser = argparse.ArgumentParser
+  (...)` block and the 5-line default-signame `if` block both removed from
+  `main()`; replaced with `parser = build_arg_parser()` and `args.signame =
+  normalize_signal_name(args.sigmean, args.sigwidth, args.signame)`.
+  `from run_cli import build_arg_parser, normalize_signal_name` added
+  (flat sibling-import style). The top-level `argparse` name in the
+  combined `import os,sys,re,argparse,subprocess,shutil` statement is now
+  dead - left in place and documented, per the established policy for
+  this not-yet-gated file's dead imports (`hashlib`/`platform`/
+  `subprocess` since Chunk 3.B, `re` since Chunk 5.B), deferred to
+  Chunk 8's coordinator slimming.
+- `tests/test_run_cli.py` created with 5 tests, **rewritten to call
+  `run_cli.build_arg_parser()`/`run_cli.normalize_signal_name()` directly**
+  rather than through `main()` (see below).
+- `scripts/quality_check.py`: added `python/run_cli.py` to
+  `python_targets` and `tests/test_run_cli.py` to `test_targets`.
+
+### Necessary test-relocation adaptation, and one deliberate non-move
+
+Chunk 7.A's 5 characterization tests called `module.main([...])` end-to-end
+(mocking `run_anaFit` and capturing its kwargs) because no standalone
+function existed yet to call directly - the same situation as Chunk 5.A.
+Now that `build_arg_parser()`/`normalize_signal_name()` exist, the 4 tests
+whose whole point is one of those two functions' own behavior were
+rewritten to call them directly and split accordingly:
+- `test_main_derives_default_signame_for_normal_width`,
+  `test_main_preserves_integer_valued_float_width_in_default_signame`,
+  `test_main_uses_zprime_naming_when_sigwidth_is_minus_999`,
+  `test_main_respects_explicit_signame_override` -> became
+  `test_normalize_signal_name_derives_default_for_normal_width`,
+  `test_normalize_signal_name_preserves_integer_valued_float_width`,
+  `test_normalize_signal_name_uses_zprime_naming_when_sigwidth_is_minus_999`,
+  `test_normalize_signal_name_respects_explicit_override` in
+  `tests/test_run_cli.py`, calling `run_cli.normalize_signal_name(sigmean,
+  sigwidth, signame)` directly - no `main()`, no module loading, no
+  `tmp_path`/`--folder` needed at all, since the pure function has no
+  filesystem side effects. Same expected values as Chunk 7.A, unchanged.
+- `test_main_parses_representative_j100_style_invocation` was **split
+  rather than moved wholesale**: its flag-parsing assertions (datafile,
+  backgroundfile, rangelow/rangehigh, dosignal/dolimit/doprefit,
+  sigmean/sigwidth, nsig default, maskthreshold, sysfile) became
+  `test_build_arg_parser_parses_representative_j100_style_invocation` in
+  `tests/test_run_cli.py`, calling `run_cli.build_arg_parser()` directly
+  and asserting `args.signame is None` (the bare parser leaves it
+  unset - deriving a default is `normalize_signal_name()`'s job, not the
+  parser's). Its `systdict` assertion belongs to neither new function -
+  loading `--sysfile` into `systdict` is separate logic that **stays
+  inline in `main()`** (out of scope for this chunk's two named target
+  functions) - so the original test **was kept in
+  `tests/test_run_anaFit.py`**, unmoved, now serving explicitly as
+  `main()`'s own wiring/smoke test: that `build_arg_parser()` ->
+  `parser.parse_args()` -> `normalize_signal_name()` -> the kwargs
+  actually passed to `run_anaFit()` are still correctly connected, plus
+  the one piece of CLI logic that remains inline. This is a documented,
+  necessary Test Relocation Rule exception, not an oversight: the test's
+  coverage spans two extracted functions and one still-inline block at
+  once, so it could not honestly become an import-line-only move into
+  either module.
+
+### Ruff/Black fixes required to register the new file (mechanical, zero behavior change)
+
+Registering `run_cli.py` in `python_targets` was the first time this
+exact code was lint-checked (it lived inline in the un-gated
+`run_anaFit.py`'s `main()` before): every `add_argument(...)` call
+exceeded the 100-column limit (up to 178 characters) and was reflowed by
+`python -m black python/run_cli.py` into one-argument-per-line or
+single-line form as each call's length required; two calls remained
+exactly at 99-100 columns after formatting and needed no further change.
+No `ruff check` findings beyond what black's reformat already resolved.
+
+### Verification performed
+
+- `python -m pytest tests/test_run_cli.py -v` → 5 passed, in isolation.
+- `python -m pytest tests/test_run_cli.py tests/test_run_anaFit.py -v`
+  → 21 passed (5 new + 16 remaining in `test_run_anaFit.py`, matching the
+  pre-move total of 21 exactly: Chunk 7.A's 20 plus one - Chunk 7.A had
+  added 5 to a pre-existing 15, Step B nets the same 21 by moving 4 out
+  and keeping 1 as the coordinator's wiring test).
+- `python scripts/quality_check.py --mode full` → 151 passed, 2
+  deselected; ruff clean; black clean (22 files unchanged); exit code 0.
+- `git diff --stat -- python/run_anaFit.py` → 32 lines changed (4
+  insertions, 28 deletions).
+- `git diff --check` → passed (all trailing-whitespace hits are
+  pre-existing lines in `run_anaFit.py`'s untouched body).
+- The mandatory J100/J50 integration gate was **not** rerun for this
+  chunk: `build_arg_parser()`/`normalize_signal_name()` touch no real
+  branch conditions in the scientific fit/masking pipeline (pure CLI
+  parsing and string formatting), matching the precedent set by Chunk 2.B
+  (`run_manifest.py`) and Chunk 3.B (`run_provenance.py`), neither of
+  which reran it either - Section 7 reserves the mandatory rerun for
+  Chunks 4, 5, 8, and always before 12.
+
+### Compliance review (Section 8, Extraction checklist)
+
+1. Chunk 7, Step B (this entry) - the plan's last extraction chunk.
+2. Step A is committed (`9194c2a`) and referenced above.
+3. No scientific constants, references, tolerances, dependency revisions,
+   or canonical workflow arguments touched.
+4. Relocated tests' diffs are not import-line-only - the call target
+   changed from `module.main(...)` to `run_cli.build_arg_parser()`/
+   `run_cli.normalize_signal_name(...)` directly for 5 tests, and one
+   test was deliberately kept unmoved as a documented exception (its
+   coverage spans a still-inline block); no assertion or expected value
+   changed from Chunk 7.A.
+5. Both new functions are covered: `build_arg_parser()` (1 direct test
+   plus indirect coverage via `main()`'s own wiring test) and
+   `normalize_signal_name()` (4 tests covering normal width, the
+   float-formatting quirk, the Zprime branch, and explicit override).
+6. Confirmed by grep: `run_anaFit.py` actually imports and never
+   redefines `build_arg_parser`/`normalize_signal_name`; no remaining
+   `argparse.` call sites outside the dead top-level import.
+7. Only this chunk's five changed/new files were staged.
+8. All required Section 7 gates ran and passed; the mandatory integration
+   gate was correctly judged not applicable to this chunk (see above),
+   matching established precedent for non-branch-touching chunks.
+9. `git diff --check` passed.
+10. This activity-log entry appended (not a rewrite of any existing
+    section).
+11. Chunk 8 through 12 remain open, listed below.
+12. No other branch's Tier 3 work was consulted.
+
+### Remaining open chunks
+
+Chunks 8 through 12 in `doc/TIER3_COMPLETION_PLAN.md` are open. All seven
+module extractions (Chunks 1-7) are now complete and verified;
+`python/run_anaFit.py` is 254 lines. Chunk 8 (coordinator slimming and
+dependency-direction verification) is next.
+
+## 2026-09-03: Fix run_cli.py description placeholder and a wrong test return annotation (GitHub Copilot review, PR #6)
+
+### What Copilot found
+
+Two findings on the Chunk 7.B commit (`fdee1ae`):
+
+1. `python/run_cli.py:5` (also flagged, incorrectly, as recurring on line
+   53 - no second occurrence actually exists there, checked directly):
+   `argparse.ArgumentParser(description="%prog [options]")` uses the
+   optparse-era `%prog` placeholder, which `argparse` does not substitute
+   in `description` - it would appear literally in `--help` output.
+   `argparse`'s own placeholder is `%(prog)s`.
+2. `tests/test_run_fit.py:135-138`:
+   `_prepare_build_fit_extract_success_doubles()` is annotated `-> None`
+   but actually `return`s `executed_commands` (a `list[str]`).
+
+### Verification performed before fixing
+
+- Finding 2 (return-type mismatch) is directly visible by reading the
+  function body against its own signature - confirmed by inspection, no
+  further check needed.
+- Finding 1 required checking whether `argparse` actually substitutes
+  `%(prog)s` (unlike `%prog`, which is optparse-specific) - confirmed
+  empirically: constructing two parsers with `description="%prog
+  [options]"` and `description="%(prog)s [options]"` respectively and
+  rendering each showed the first prints the placeholder text unchanged,
+  the second substitutes the real program name. This is a real,
+  user-visible bug (a person running `--help` would see the literal
+  string `%prog [options]` instead of a description).
+- **Scope check**: `git blame`/direct comparison against the pre-Tier-3
+  commit (`5b23af8`) confirmed `'%prog [options]'` is not something this
+  refactor introduced - it was already present, verbatim, in the original
+  `run_anaFit.py`'s inline `main()`, moved as-is into `run_cli.py` by
+  Chunk 7.B per the "move verbatim" policy. A repo-wide `grep -rn
+  "%prog"` additionally found the exact same `%prog [options]` pattern in
+  **29 other files** across `python/` (essentially every script in the
+  repo using `argparse`/`optparse`), confirming this is a long-standing,
+  repo-wide copy-paste convention, not something specific to
+  `run_anaFit.py`. Per `doc/TIER3_COMPLETION_PLAN.md`'s own guardrail
+  ("Fixing pre-existing, unrelated issues noticed along the way ... note
+  them in the activity log if seen again, do not fix them unless a chunk
+  says to"), the other 29 occurrences are explicitly **out of scope** and
+  were not touched - Tier 3's scope is the four named files, not a
+  repo-wide sweep. This one occurrence is fixed because it is literally
+  the line Copilot flagged in this PR's diff and is required to complete
+  the merge review, matching this project's established practice for
+  addressing real PR review findings (e.g. the `should_mask()` NaN fix).
+
+### A second, unrelated pre-existing bug found while verifying the fix (noted, not fixed)
+
+Confirming the `%(prog)s` substitution end-to-end via
+`parser.print_help()` crashed with `ValueError: unsupported format
+character ')' ... `, unrelated to the `description` fix itself. Root
+cause: the `--sigwidth` argument's `help=` text - `"Width of signal
+Gaussian for s+b fit (in %). If -999 dealing with Zprime samples."` -
+contains a bare `%` that `argparse`'s help-string `%`-expansion (used for
+things like `%(default)s`) chokes on when rendering the *full* help
+output. This exact string was confirmed present, unchanged, at the
+pre-Tier-3 commit (`5b23af8`) too - calling `run_anaFit.py --help` (or
+now `run_cli.build_arg_parser().print_help()`) has been broken since
+before this refactor started. Per the same plan guardrail cited above,
+this is noted here rather than fixed; the new regression test below
+verifies the `description` fix in isolation (via the formatter's
+`add_text()`/`format_help()`, not `parser.print_help()`) specifically to
+avoid tripping over this unrelated, out-of-scope crash.
+
+### Fixes
+
+- `python/run_cli.py`: `description="%prog [options]"` ->
+  `description="%(prog)s [options]"`.
+- `tests/test_run_fit.py`: `_prepare_build_fit_extract_success_doubles()`'s
+  return annotation `-> None` -> `-> list[str]`.
+- `tests/test_run_cli.py`:
+  `test_build_arg_parser_description_uses_argparse_prog_placeholder`
+  added - asserts `"%prog" not in parser.description` and that rendering
+  the description through the formatter substitutes the real `prog`
+  value. Confirmed to fail against the pre-fix `"%prog [options]"` string
+  (`AssertionError: assert '%prog' not in '%prog [options]'`) and pass
+  against the fix.
+
+### Verification performed
+
+- `python -m pytest tests/test_run_cli.py -v` → 6 passed (5 pre-existing
+  plus the new regression test).
+- `python -m pytest tests/test_run_fit.py tests/test_run_cli.py tests/test_run_anaFit.py -v`
+  → 26 passed.
+- `python scripts/quality_check.py --mode full` → 152 passed, 2
+  deselected; ruff clean; black clean (22 files unchanged).
+- `git diff --check` → passed.
+- The mandatory integration gate was not rerun: neither fix touches the
+  fit/masking pipeline (a CLI help-text placeholder and a test-only type
+  annotation), matching the same judgment already applied to Chunk 7.B
+  itself.
+
+### Scope
+
+Only `python/run_cli.py`, `tests/test_run_fit.py`, and
+`tests/test_run_cli.py` touched. Not folded into Chunk 8 - a review
+finding on already-pushed Chunk 7 work, fixed immediately as its own
+commit, per this project's established practice for Copilot review
+findings.
+
+## 2026-09-03: Fix the sigwidth help-string crash and a rangehigh help typo (GitHub Copilot review, PR #6)
+
+### What Copilot found
+
+Two more findings on `python/run_cli.py`, following up on the previous
+commit (`850b35b`):
+
+1. (Medium) The `--sigwidth` help text contains a literal `%`, which
+   `argparse` treats as a format marker when rendering full `--help`
+   output; this raises `ValueError` and breaks help generation in normal
+   CLI usage. Suggested fix: escape it as `%%`.
+2. (Low) The `--rangehigh` help text reads `"End Start of fit range (in
+   GeV)"` - an apparent accidental duplication/typo, confusing in `--help`
+   output.
+
+### Correction to the previous commit's scoping decision
+
+The previous commit (`850b35b`) already found and *documented* this exact
+`--sigwidth` crash while verifying the `%prog` fix, but judged it
+out-of-scope as a "pre-existing, unrelated issue noticed incidentally"
+per `doc/TIER3_COMPLETION_PLAN.md`'s guardrail, and left it unfixed with
+a comment explaining why. Copilot has now flagged the same line directly
+as a blocking finding on this PR. Per this project's established
+practice for review findings (fix what Copilot raises on the PR, not a
+repo-wide sweep), this is the correct trigger to fix it: unlike the other
+28 occurrences of the unrelated `%prog` pattern found elsewhere in the
+repo (still correctly left untouched - a repo-wide sweep remains out of
+scope), this line lives in `run_cli.py`, a file created by this PR, and
+is directly, specifically flagged as blocking approval. The guardrail's
+purpose is to prevent scope creep into unrelated files noticed
+in passing, not to leave a confirmed, reviewer-flagged crash in the code
+this PR is introducing.
+
+### Verification performed before fixing
+
+- Confirmed the crash directly: `run_cli.build_arg_parser().print_help()`
+  raised `ValueError: unsupported format character ')' (0x29) at index
+  42` before the fix (matches the trace already captured in the previous
+  commit's activity-log entry).
+- Confirmed the `--rangehigh` typo by direct inspection - the text is
+  exactly `"End Start of fit range (in GeV)"`, evidently `"End "`
+  mistakenly prepended to a copy of `--rangelow`'s own `"Start of fit
+  range (in GeV)"` help text.
+- After fixing, confirmed `parser.format_help()` renders the full help
+  text successfully (no exception), and that the escaped `%%` renders as
+  a single literal `%` in the output: `"Width of signal Gaussian for s+b
+  fit (in %). If -999 dealing with Zprime samples."` appears verbatim in
+  the rendered text - the escaping changes only how the help string is
+  written in source, not what a user sees.
+
+### Fixes
+
+- `python/run_cli.py`:
+  - `--sigwidth`'s `help=` string: `"...(in %). If -999..."` ->
+    `"...(in %%). If -999..."`.
+  - `--rangehigh`'s `help=` string: `"End Start of fit range (in GeV)"`
+    -> `"End of fit range (in GeV)"`.
+- `tests/test_run_cli.py`:
+  - `test_build_arg_parser_format_help_does_not_raise` added - calls
+    `parser.format_help()` directly (the full render, not the isolated
+    formatter workaround the previous commit used to sidestep this exact
+    crash) and asserts the expected wording appears. Confirmed to raise
+    `ValueError` against the pre-fix `%` (not `%%`) and pass against the
+    fix.
+  - `test_build_arg_parser_rangehigh_help_does_not_duplicate_start` added
+    - asserts the exact expected help string. Confirmed to fail against
+    the pre-fix `"End Start of fit range (in GeV)"` text and pass against
+    the fix.
+  - `test_build_arg_parser_description_uses_argparse_prog_placeholder`
+    (added in the previous commit) simplified: now calls
+    `parser.format_help()` directly instead of the isolated
+    `formatter.add_text()`/`format_help()` workaround, since the full
+    render no longer crashes - the workaround and its explanatory comment
+    are no longer needed and were removed.
+
+### Verification performed
+
+- `python -m pytest tests/test_run_cli.py -v` → 8 passed (3 new/changed
+  plus 5 unchanged).
+- `python -m pytest tests/test_run_cli.py tests/test_run_fit.py tests/test_run_anaFit.py -v`
+  → 28 passed.
+- `python scripts/quality_check.py --mode full` → 154 passed, 2
+  deselected; ruff clean; black clean (22 files unchanged) - one further
+  black reformat collapsed `--rangehigh`'s `add_argument(...)` back onto
+  a single line, now under 100 columns with the shorter help text.
+- `git diff --check` → passed.
+- The mandatory integration gate was not rerun: this fix touches only CLI
+  help text (`argparse` `help=`/`description=` strings), not the
+  fit/masking pipeline, matching the same judgment already applied to
+  Chunk 7.B and the previous Copilot-fix commit.
+
+### Scope
+
+Only `python/run_cli.py` and `tests/test_run_cli.py` touched. Not folded
+into Chunk 8 - a review finding on already-pushed Chunk 7 work, fixed
+immediately as its own commit, per this project's established practice
+for Copilot review findings.
+
+## 2026-09-03: Fix optional range args and ambiguous command-string concatenation (GitHub Copilot review, PR #6)
+
+### What Copilot found
+
+Two more findings on the newly introduced Chunk 6/7 modules:
+
+1. (Medium) `python/run_cli.py`: `--rangelow`/`--rangehigh` are parsed as
+   optional, but `run_anaFit.run_anaFit()` immediately does `rangehigh -
+   rangelow` arithmetic, so omitting either would parse to `None` and
+   crash later with a confusing `TypeError` instead of a clear `argparse`
+   usage error at parse time. Suggested fix: mark both `required=True`.
+2. (Low) `python/run_fit.py`: `xmlreader_command`'s construction relies on
+   implicit adjacent-string-literal concatenation with mixed quoting
+   (`"..." '...'`), which is easy to misread/edit. Suggested fix: a single
+   f-string, keeping the exact runtime command text unchanged.
+
+### Verification performed before fixing
+
+- Confirmed finding 1's premise by inspection: `run_anaFit()`'s first
+  real line of work is `nbins=rangehigh - rangelow`, unconditionally.
+  Neither flag has a `default=`.
+- Checked whether this was introduced by Tier 3 or pre-existing: it was
+  already present, verbatim, in the original `run_anaFit.py` (moved as-is
+  by Chunk 7.B). Notably, the **sibling** script
+  `python/run_injections_anaFit.py` (out of Tier 3's scope, untouched by
+  this refactor) already marks its own `--rangelow`/`--rangehigh` as
+  `required=True` for the exact same reason - confirming this is an
+  established convention elsewhere in the codebase that `run_anaFit.py`'s
+  own CLI simply never had, not a new requirement being invented here.
+- Checked real-world impact: both `scripts/run_anaFit_J100.sh` and
+  `scripts/run_anaFit_J50.sh` (the only production callers) already pass
+  `--rangelow`/`--rangehigh` unconditionally - `required=True` changes
+  nothing for the canonical workflows, it only changes what happens for
+  an invocation that omits them (a clear `argparse` error instead of a
+  crash two functions later).
+- Found one existing test that *would* break:
+  `test_main_propagates_analysis_status` in `tests/test_run_anaFit.py`
+  omits both flags (it mocks `run_anaFit` entirely, so the resulting
+  `None` values were never actually used) - updated to pass them, per the
+  same practice used for prior fixes that require a compensating test
+  update to stay green.
+- Verified finding 2's suggested rewrite is byte-identical to the
+  original by direct comparison in a Python shell: constructing the old
+  three-piece expression and the new f-string with the same `topfile`
+  value and comparing the results confirmed `old == new`.
+
+### Fixes
+
+- `python/run_cli.py`: `--rangelow` and `--rangehigh` both gained
+  `required=True` (and were reflowed to `black`'s multi-line
+  `add_argument(...)` form, since the line no longer fits one line with
+  the new keyword).
+- `python/run_fit.py`: `xmlreader_command`'s construction rewritten from
+  `("...%s " '...') % topfile` to a single f-string
+  `f'...XMLReader -x {topfile} -o "logy integral" --minimizerStrategy 0'`
+  - same runtime string, single unambiguous literal.
+- `tests/test_run_anaFit.py`: `test_main_propagates_analysis_status`'s
+  args list gained `--rangelow 481 --rangehigh 3000`.
+- `tests/test_run_cli.py`:
+  - The representative-invocation args list was pulled out into a shared
+    module-level `_REPRESENTATIVE_ARGS` constant (previously duplicated
+    inline), used by both the existing parse test and the new one below.
+  - `test_build_arg_parser_requires_range_flags` added (parametrized over
+    both flags) - builds a valid arg list, removes one flag/value pair,
+    and asserts `parser.parse_args(...)` raises `SystemExit` with the
+    missing flag named in the printed error. Confirmed to fail
+    (`DID NOT RAISE SystemExit`) against the pre-fix optional flags and
+    pass against the fix.
+- `tests/test_run_fit.py`:
+  `test_build_fit_extract_stops_after_xmlreader_failure` extended to
+  capture and assert the exact rendered `xmlreader_command` string,
+  pinning down that the f-string rewrite produces byte-identical output.
+
+### Verification performed
+
+- `python -m pytest tests/test_run_cli.py -v` → 10 passed.
+- `python -m pytest tests/test_run_fit.py tests/test_run_cli.py tests/test_run_anaFit.py -v`
+  → 30 passed.
+- `python scripts/quality_check.py --mode full` → 156 passed, 2
+  deselected; ruff clean; black clean (22 files unchanged).
+- `git diff --check` → passed.
+- The mandatory integration gate was not rerun: `run_fit.py`'s change is
+  proven byte-identical output (verified above and pinned by the new
+  test), and `run_cli.py`'s `required=True` change does not alter the
+  canonical J100/J50 invocations at all (both already pass these flags) -
+  neither fix changes fit/masking behavior for the authoritative
+  workflows, matching the judgment already applied to the two preceding
+  Copilot-fix commits on this PR.
+
+### Scope
+
+Only `python/run_cli.py`, `python/run_fit.py`, `tests/test_run_cli.py`,
+`tests/test_run_fit.py`, and `tests/test_run_anaFit.py` touched. Not
+folded into Chunk 8 - review findings on already-pushed Chunk 6/7 work,
+fixed immediately as their own commit, per this project's established
+practice for Copilot review findings.
+
+## 2026-09-03: Fix silent output-file collision when fitresultfile lacks the FitResult token (GitHub Copilot review, PR #6)
+
+### What Copilot found
+
+`python/run_fit.py` (High severity): `postfitfile`/`parameterfile`/
+`logfile`/`edmplot` are all derived from `fitresultfile` via
+`fitresultfile.replace("FitResult", <other token>)` - an undocumented
+filename contract. If `fitresultfile`'s basename does not contain
+`"FitResult"` (the CLI currently accepts any string via `--outputfile`,
+with no such validation), every one of those substitutions is a no-op,
+so `postfitfile` and `parameterfile` both silently collapse back to
+`fitresultfile` itself; `PostfitExtractor`/`FitParameterExtractor` then
+both open that same path in `RECREATE` mode, overwriting the quickFit
+result twice. Separately, because the substitution operates on the
+*entire path* rather than just the filename, a parent directory
+component that happens to contain `"FitResult"` gets rewritten too.
+Copilot's ask: validate the basename before launching quickFit, and
+derive each sibling output by transforming only that basename.
+
+### Verification performed before fixing
+
+- Confirmed the collapse-to-self claim by direct reasoning through
+  `str.replace()` semantics for a non-matching input (e.g.
+  `"fit-result.root"`): every `.replace("FitResult", ...)` call is a
+  no-op, so `postfitfile == parameterfile == fitresultfile`.
+- Confirmed this predates Tier 3 - the exact same `.replace("FitResult",
+  ...)` pattern, operating on the whole `fitresultfile` path, was already
+  present in the original `run_anaFit.py`, moved verbatim into
+  `run_fit.py` by Chunk 6.B. Unlike the `%prog` pattern (found duplicated
+  in 29 unrelated files and correctly left untouched), this logic lives
+  entirely inside `run_fit.py`, a file this PR created - the same
+  reasoning already applied to the `--rangelow`/`--rangehigh` and
+  `xmlreader_command` fixes earlier on this PR justifies fixing it here,
+  not sweeping the rest of the repository.
+- Checked real-world impact: both `scripts/run_anaFit_J100.sh` and
+  `scripts/run_anaFit_J50.sh` always construct `--outputfile` as
+  `${folder}/FitResult_anaFit_...root` - the canonical workflows are
+  unaffected either way; this is a latent bug reachable only via a
+  manual invocation with a non-conforming `--outputfile`.
+- Reproduced the parent-directory-rewrite half of the bug directly: ran
+  `build_fit_extract(..., fitresultfile="run/FitResult_stage/
+  FitResult_anaFit.root")` against the pre-fix code and observed
+  `postfitfile` come back as `"run/PostFit_stage/PostFit_anaFit.root"` -
+  the `FitResult_stage` directory segment was rewritten to `PostFit_stage`
+  along with the filename, confirmed via the new regression test (below)
+  failing against the pre-fix code before the production fix was applied.
+
+### Fix
+
+`python/run_fit.py`: `os.path.split(fitresultfile)` splits the path once
+into `fitresult_dir`/`fitresult_name`. A validation check (raising
+`ValueError` if `"FitResult"` is not in `fitresult_name`) runs where
+`logfile`/`edmplot` were already being derived - after XMLReader (which
+never touches `fitresultfile`) but **before** quickFit launches, per
+Copilot's ask. All four derived filenames (`logfile`, `edmplot`,
+`postfitfile`, `parameterfile`) now transform only `fitresult_name` and
+rejoin with `fitresult_dir` via `os.path.join(...)`, instead of
+transforming the whole path. For every filename shape actually used
+today (no directory component, or a directory with no incidental
+`"FitResult"` substring), this produces byte-identical output to the
+original code - confirmed by the three pre-existing success-path tests
+passing unmodified against the fix.
+
+### Tests added
+
+- `tests/test_run_fit.py::test_build_fit_extract_rejects_fitresultfile_without_fitresult_token` -
+  asserts `ValueError` (matching `'must contain "FitResult"'`) for
+  `fitresultfile="fit-result.root"`, and that quickFit's
+  `execute_required` call is never reached. Confirmed to pass silently
+  (no exception) against the pre-fix code and raise correctly against the
+  fix.
+- `tests/test_run_fit.py::test_build_fit_extract_derives_siblings_from_basename_only` -
+  `fitresultfile="run/FitResult_stage/FitResult_anaFit.root"`; asserts
+  `postfitfile`/`parameterfile` come back as
+  `"run/FitResult_stage/PostFit_anaFit.root"`/
+  `"run/FitResult_stage/FitParameters_anaFit.root"` (directory segment
+  preserved) and that the `plot_edm.py` diagnostic command embeds the
+  correctly-derived `logfile`/`edmplot` paths too. Confirmed to fail
+  against the pre-fix code with the directory segment corrupted to
+  `"PostFit_stage"` (see above), and pass against the fix.
+
+### Verification performed
+
+- `python -m pytest tests/test_run_fit.py -v` → 6 passed (4 pre-existing
+  plus the 2 new regression tests).
+- `python -m pytest tests/test_run_fit.py tests/test_run_cli.py tests/test_run_anaFit.py -v`
+  → 32 passed.
+- `python scripts/quality_check.py --mode full` → 158 passed, 2
+  deselected; ruff clean; black clean (22 files unchanged).
+- `git diff --check` → passed.
+- `python -m pytest tests/test_analysis_workflows_integration.py -m "integration and requires_root" -v`
+  → 1 passed in 160.02s, matching the frozen reference exactly - rerun as
+  extra confidence, since this fix changes the exact filename-derivation
+  logic inside `build_fit_extract()` (the same function Chunk 6.B's own
+  commit required the mandatory gate for), confirming the fix is
+  byte-identical for the real J100/J50 filename shapes, not just the
+  unit-test fixtures above.
+
+### Scope
+
+Only `python/run_fit.py` and `tests/test_run_fit.py` touched. Not folded
+into Chunk 8 - a review finding on already-pushed Chunk 6 work, fixed
+immediately as its own commit, per this project's established practice
+for Copilot review findings.

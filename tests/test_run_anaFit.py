@@ -80,85 +80,98 @@ def test_main_propagates_analysis_status(
             "fit-result.root",
             "--nbkg",
             "dummy",
+            # --rangelow/--rangehigh are required (Copilot review, PR #6):
+            # run_anaFit() immediately does rangehigh - rangelow arithmetic,
+            # so they can no longer be omitted from a real invocation.
+            "--rangelow",
+            "481",
+            "--rangehigh",
+            "3000",
         ]
     )
 
     assert result == analysis_status
 
 
-def test_build_fit_extract_stops_after_xmlreader_failure(
+def _capture_run_anafit_kwargs(module, monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
+    captured: dict[str, object] = {}
+
+    def fake_run_anaFit(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(module, "run_anaFit", fake_run_anaFit)
+    return captured
+
+
+def test_main_parses_representative_j100_style_invocation(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Mirrors an actual invocation shape from scripts/run_anaFit_J100.sh:
+    # backgroundfile/signalfile present, no --signame, no --dosignal/
+    # --dolimit/--doprefit/--sysfile (all left at their defaults).
+    #
+    # This is now main()'s own wiring/smoke test (Tier 3 Chunk 7): argument
+    # parsing itself is build_arg_parser()'s responsibility and
+    # default-signame derivation is normalize_signal_name()'s, both unit-
+    # tested directly in tests/test_run_cli.py. What's left to check here
+    # is that main() still wires parser -> normalize_signal_name -> the
+    # kwargs passed to run_anaFit() correctly, plus the one piece of CLI
+    # logic that stays inline in main() itself: defaulting systdict to
+    # None when --sysfile isn't given.
     module = _load_run_anafit_module(monkeypatch)
-    calls: list[str] = []
+    captured = _capture_run_anafit_kwargs(module, monkeypatch)
 
-    def fail_xmlreader(cmd, description, expected_outputs=()):
-        calls.append(description)
-        return False
-
-    monkeypatch.setattr(module, "execute_required", fail_xmlreader)
-
-    with pytest.raises(
-        RuntimeError,
-        match="XMLReader workspace generation failed",
-    ):
-        module.build_fit_extract(
-            topfile="top.xml",
-            datafile="input.root",
-            datahist="data",
-            rangelow=481,
-            rangehigh=3000,
-            wsfile="workspace.root",
-            fitresultfile="FitResult.root",
-        )
-
-    assert calls == ["XMLReader workspace generation"]
-
-
-def test_build_fit_extract_stops_after_quickfit_failure(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    module = _load_run_anafit_module(monkeypatch)
-    calls: list[str] = []
-    commands: list[str] = []
-
-    def execute_required_with_quickfit_failure(
-        cmd,
-        description,
-        expected_outputs=(),
-    ):
-        calls.append(description)
-        commands.append(cmd)
-        return description != "quickFit background or signal fit"
-
-    monkeypatch.setattr(
-        module,
-        "execute_required",
-        execute_required_with_quickfit_failure,
+    module.main(
+        [
+            "--datafile",
+            "Input/data/dijetTLA/mjj_spectra_J100_dataAll.root",
+            "--datahist",
+            "mjj_Data_2018",
+            "--backgroundfile",
+            "background.xml",
+            "--signalfile",
+            "signal.xml",
+            "--categoryfile",
+            "category.xml",
+            "--topfile",
+            "top.xml",
+            "--wsfile",
+            "workspace.root",
+            "--sigmean",
+            "1200",
+            "--sigwidth",
+            "8.5",
+            "--nbkg",
+            "2E8,0,3E8",
+            "--rangelow",
+            "481",
+            "--rangehigh",
+            "3000",
+            "--outputfile",
+            "FitResult.root",
+            "--maskthreshold",
+            "0.01",
+            "--folder",
+            str(tmp_path),
+        ]
     )
 
-    with pytest.raises(
-        RuntimeError,
-        match="quickFit failed",
-    ):
-        module.build_fit_extract(
-            topfile="top.xml",
-            datafile="input.root",
-            datahist="data",
-            rangelow=481,
-            rangehigh=3000,
-            wsfile="workspace.root",
-            fitresultfile="FitResult.root",
-        )
-
-    assert calls == [
-        "XMLReader workspace generation",
-        "quickFit background or signal fit",
-    ]
-
-    quickfit_command = commands[1]
-    assert " > quickFitLog.log 2>&1" in quickfit_command
-    assert chr(38) + chr(62) not in quickfit_command
+    assert captured["datafile"] == "Input/data/dijetTLA/mjj_spectra_J100_dataAll.root"
+    assert captured["backgroundfile"] == "background.xml"
+    assert captured["signalfile"] == "signal.xml"
+    assert captured["rangelow"] == 481
+    assert captured["rangehigh"] == 3000
+    assert captured["dosignal"] is False
+    assert captured["dolimit"] is False
+    assert captured["doprefit"] is False
+    assert captured["sigmean"] == 1200
+    assert captured["sigwidth"] == 8.5
+    assert captured["nsig"] == "0,-1E6,1E6"  # default, not passed explicitly
+    assert captured["signame"] == "mean1200_width8.5"
+    assert captured["maskthreshold"] == 0.01
+    assert captured["systdict"] is None
 
 
 def test_setup_build_and_fit_propagates_setup_lxplus_failure_and_restores_cwd(
