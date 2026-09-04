@@ -121,6 +121,10 @@ def main() -> None:
     python_targets = [
         "plot_edm.py",
         "python/analysis_reference.py",
+        "python/createBinning.py",
+        "python/ExtractFitParameters.py",
+        "python/ExtractPostfitFromWS.py",
+        "python/FindBHWindow.py",
         "python/plotPostFit.py",
         "python/repo_utils.py",
         "python/run_anaFit.py",
@@ -137,6 +141,10 @@ def main() -> None:
     test_targets = [
         "tests/test_analysis_reference.py",
         "tests/test_compare_root_outputs.py",
+        "tests/test_create_binning.py",
+        "tests/test_extract_fit_parameters.py",
+        "tests/test_extract_postfit_from_ws.py",
+        "tests/test_find_bh_window.py",
         "tests/test_plot_edm.py",
         "tests/test_plot_post_fit.py",
         "tests/test_plot_postfit_macro.py",
