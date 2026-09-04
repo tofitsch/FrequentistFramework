@@ -6106,3 +6106,1435 @@ already-committed, unchanged test code - no test or production file was
 touched to produce this finding or this correction. Per the activity
 log's append-only guardrail, the original entry is left exactly as
 written above; this section is the correction of record.
+
+## 2026-09-03: Tier-3 refactoring — Chunk 10.A: characterization tests for `python/plotPostFit.py`
+
+### Objective
+
+Pin down the current, unmodified behavior of `python/plotPostFit.py`
+before splitting it into functions, per `doc/TIER3_COMPLETION_PLAN.md`
+Chunk 10. The file has zero functions today — the entire 79-line file is
+top-level script code (`import ROOT` at module scope, then a linear
+sequence of `argparse`/`ROOT.TFile`/`TCanvas` calls) — so, per Chunk 10's
+own instruction, Step A's characterization runs the current script
+**end-to-end as a subprocess**, since there is nothing importable to call
+directly yet.
+
+### A discrepancy between the plan and this dev environment, found before writing the test
+
+`plotPostFit.py` does `import ROOT` at module scope. Confirmed directly:
+`.venv/bin/python -c "import ROOT"` raises `ModuleNotFoundError` in this
+repository's dev venv — the same situation already documented for
+`plot_edm.py` in the Chunk 9.A entry above, except here it cannot be
+worked around with `sys.modules` stubbing, because Step A's own
+characterization strategy (per the plan) is to run the *whole script* as
+a subprocess against a real ROOT file and assert on its real output — the
+point is to exercise genuine `ROOT.TFile`/`TCanvas`/`TPad` behavior, not a
+stand-in for it. `plotPostFit.py` is only ever invoked in production
+after `scripts/setup_buildAndFit.sh` has been sourced (see
+`scripts/run_anaFit_J100.sh`/`run_anaFit_J50.sh`, both of which run
+`python "$repo_dir/python/plotPostFit.py" -i ... -o ...` after sourcing
+that script), which puts the LCG/CVMFS-provided `python` (with `ROOT`
+importable) on `PATH` — not this repository's own pytest dev venv. The
+new test therefore sources `scripts/setup_buildAndFit.sh` itself inside a
+`subprocess.run(["bash", "-lc", ...])` call before invoking the script,
+mirroring the exact probe pattern already established by
+`test_analysis_workflows_integration.py::test_authoritative_setup_provides_scientific_runtime`.
+Run directly against this host's actual CVMFS/LCG environment, it passes
+for real — this is not a mocked assertion.
+
+### Target script (as it exists today)
+
+| Entry point | Inputs | Outputs | Side effects |
+|---|---|---|---|
+| `python plotPostFit.py -i <inputFile> -o <output>` (whole script, no functions) | `-i/--inputFile: str` (a `PostFit_*.root` file), `-o/--output: str` | none (process exit code only) | opens `inputFile` via `ROOT.TFile.Open`; reads `Run3TLA/postfit`, `Run3TLA/data`, `Run3TLA/chi2`; builds a two-pad `TCanvas` (postfit-vs-data overlay + data/postfit ratio); writes `output` via `TCanvas.SaveAs`; closes `inputFile` |
+
+### Tests added (`tests/test_plot_post_fit.py`, new file)
+
+- `test_plot_post_fit_script_produces_nonempty_pdf_for_real_fixture` —
+  runs the real, unmodified script as a subprocess (via the
+  `setup_buildAndFit.sh`-sourcing probe described above) against the
+  already-committed
+  `run/fits/J100/run_481_3000_sixPar/PostFit_anaFit_sixPar_bkgOnly.root`
+  fixture, writing to a `tmp_path` output; asserts the process exits `0`
+  and the output PDF exists and is non-empty.
+
+Per the plan's own instruction, **byte-identical PDF comparison is
+deliberately not attempted**: ROOT's PDF output is not guaranteed
+bit-reproducible across environments/fonts, and Tier 1 already
+established (2026-08-20 activity-log entry, "Plotting separated from
+scientific acceptance") that PDF artifacts are excluded from strict
+scientific comparison. "Runs successfully against a real fixture and
+produces a real, non-empty plot" is the chosen, and only, characterized
+invariant — recorded here explicitly so a future reader does not expect
+stronger guarantees than this step provides.
+
+### A marker decision, recorded so Step B doesn't have to re-derive it
+
+The new test is marked `@pytest.mark.requires_root` only (not also
+`requires_analysis_dependencies`). Per `doc/TIER2_SYSTEM.md`'s own marker
+definitions, `requires_root` means "needs the configured ROOT/RooFit
+runtime" and `requires_analysis_dependencies` means "needs prepared
+external checkouts" (built `XMLReader`/`quickFit`/`pyBumpHunter`
+binaries). `plotPostFit.py` needs only a working ROOT/RooFit runtime
+(via `scripts/setup_buildAndFit.sh`) — it never invokes `XMLReader`,
+`quickFit`, or BumpHunter. `doc/TIER2_SYSTEM.md` states the ordinary gate
+("`python scripts/quality_check.py --mode full`") excludes only
+`requires_analysis_dependencies`-marked tests, not `requires_root`-marked
+ones — so, once Step B registers this file in `scripts/quality_check.py`,
+this test is expected to actually run (and pass) as part of the ordinary
+full gate on a host with the scientific runtime configured, exactly like
+every other already-registered test file in this plan. This matches the
+project's existing baseline assumption (`scripts/quality_check.py`'s own
+`REQUIRED_BASELINE_PATHS`/`_print_optional_workflow_hints` checks) that
+the J100/J50 scientific environment is present, not an optional extra.
+
+### What this commit does NOT do
+
+No production file was modified. `git status --short` shows only
+`tests/test_plot_post_fit.py` as untracked (new); `git diff --stat` is
+empty — `python/plotPostFit.py` itself was never touched. The new test
+file is **not yet** registered in `scripts/quality_check.py` — per the
+plan, that happens in Step B alongside `python/plotPostFit.py` itself.
+
+### Verification performed
+
+- `python -m pytest tests/test_plot_post_fit.py -v` → 1 passed (run for
+  real against this host's actual CVMFS/LCG scientific runtime, in
+  13.81s).
+- `python scripts/quality_check.py --mode full` → 167 passed, 2
+  deselected; ruff clean; black clean (25 files unchanged) — unaffected,
+  confirming the new file doesn't touch anything already gated.
+- `python -m ruff check tests/test_plot_post_fit.py` /
+  `python -m black --check tests/test_plot_post_fit.py` → both clean
+  already (run ahead of Step B's registration, so the file starts clean).
+- `git diff --check` → passed.
+- `git diff --stat` → empty (no production file touched).
+- `grep -nE '[[:blank:]]+$' tests/test_plot_post_fit.py` → no output.
+
+### Compliance review (Section 8, Characterization variant)
+
+1. Chunk 10, Step A.
+2. `python/plotPostFit.py` untouched; only `tests/test_plot_post_fit.py`
+   (new, untracked) added.
+3. The new test asserts real, specific behavior (real process exit code,
+   real non-empty PDF file on disk from a real ROOT fixture) — not merely
+   "does not raise."
+4. The test was run against the unmodified target file, for real, against
+   this host's actual scientific runtime, before any production change;
+   the exact result (1 passed, 13.81s) is reported above for review.
+5. Human-verification checkpoint: presented to the user in session for
+   confirmation before Step B's commit is made (recorded per Step B's own
+   activity-log entry once given).
+
+### Remaining open chunks
+
+Chunk 10.B (extraction of `parse_args`/`load_postfit_histograms`/
+`build_ratio_histogram`/`draw_postfit_canvas`/`main`) and Chunks 11
+through 12 are open.
+
+## 2026-09-03: Tier-3 refactoring — Chunk 10.B: extract functions from `python/plotPostFit.py`
+
+### Objective
+
+Move `python/plotPostFit.py`'s top-level script code, characterized and
+human-verified in Step A (commit `d24d5bf`), into five functions plus a
+`main()` and an `if __name__ == "__main__":` guard, per
+`doc/TIER3_COMPLETION_PLAN.md` Chunk 10.
+
+### What changed
+
+- `python/plotPostFit.py` restructured in place into:
+  - `PostfitHistograms` — a `typing.NamedTuple` of `(postfit, data, chi2)`.
+  - `parse_args(argv=None)` — the two `argparse` arguments, moved verbatim
+    into a function, `parser.parse_args(argv)` instead of
+    `parser.parse_args()` so it is callable with an explicit argument list
+    in tests, matching the pattern already used for `run_cli.py`'s
+    `build_arg_parser()`.
+  - `load_postfit_histograms(input_file)` — opens `input_file`, reads
+    `Run3TLA/postfit`/`Run3TLA/data`/`Run3TLA/chi2`, applies the same
+    marker/line styling the original script applied inline, moved
+    verbatim.
+  - `build_ratio_histogram(data, postfit)` — the `h_ratio = data.Clone(...);
+    h_ratio.Divide(postfit)` block and all of its styling calls, moved
+    verbatim.
+  - `draw_postfit_canvas(data, postfit, chi2_hist, ratio_hist)` — the
+    two-pad canvas, legend, and χ²/ndof text block, moved verbatim (one
+    string-formatting rewrite, see below); returns the built `TCanvas`
+    without saving it.
+  - `main(argv=None)` — orchestrates the above: sets
+    `ROOT.gStyle.SetOptStat(0)`/`ROOT.gROOT.SetBatch(True)` (moved out of
+    module scope, see decision below), calls `parse_args`, then
+    `load_postfit_histograms`, `build_ratio_histogram`,
+    `draw_postfit_canvas` in order, then `canvas.SaveAs(args.output)` and
+    `postfit_file.Close()`.
+  - `if __name__ == "__main__": main()` guard.
+- `scripts/quality_check.py`: `python/plotPostFit.py` and
+  `tests/test_plot_post_fit.py` added to `python_targets`/`test_targets`
+  (alphabetically, next to `python/analysis_reference.py` and
+  `tests/test_plot_edm.py` respectively).
+- Step A's end-to-end test
+  (`test_plot_post_fit_script_produces_nonempty_pdf_for_real_fixture`)
+  kept, unchanged, in `tests/test_plot_post_fit.py` — it is now a
+  regression test of `main()`'s CLI contract, still valuable (the Test
+  Relocation Rule does not apply here: this test never imported the
+  production file, it always ran it as a subprocess, so there is no
+  import line to update and nothing else to change).
+- Five new tests added for the newly-introduced functions (listed below).
+
+### A real, verified bug the plan's own table would have introduced: ROOT file lifetime
+
+The plan's Section 6 target-decomposition table lists
+`load_postfit_histograms(input_file)`'s output as just the
+`PostfitHistograms` triple. Implemented and tested literally as written
+first, then verified directly against the real fixture file, in this
+host's actual scientific runtime (not simulated): once the function
+returns and its own local `TFile` reference goes out of scope with no
+other reference held, calling `.GetEntries()`/any other method on the
+returned histograms fails with `AttributeError: 'CPyCppyy_NoneType'
+object has no attribute 'GetEntries'` — the file is garbage-collected
+before the histograms are used, invalidating them. The original,
+single-scope script never hit this, because its `postfit_file` stayed
+alive as a script-level name for the entire run; splitting it into a
+function that returns only the histograms introduces a new object-
+lifetime hazard that did not exist before. **Corrected the plan's
+literal table**: `load_postfit_histograms()` returns
+`(PostfitHistograms, postfit_file)` — the still-open `TFile` alongside
+the triple — and `main()` holds that reference until after
+`canvas.SaveAs(...)`, then calls `postfit_file.Close()`, exactly
+mirroring the original script's object lifetime. This was verified two
+ways: (1) a standalone reproduction script matching the plan's literal
+signature, run for real, reproducing the crash; (2) the new
+`test_load_postfit_histograms_applies_styling_and_keeps_file_open` test
+below, confirmed to fail against the literal (unfixed) version — reverted
+locally, observed a real `ValueError: too many values to unpack` at the
+unpacking call site once `main()`'s own call was also downgraded to match
+— and to pass against the fixed version once restored.
+
+### A second decision, recorded per the plan's own instruction
+
+The plan's table asks Step B to "decide whether styling stays in
+[`load_postfit_histograms`] or moves to a separate
+`style_postfit_histograms()`, and record the decision." Decision: styling
+(`data`/`postfit`'s marker/line style) **stays inside**
+`load_postfit_histograms()`. It is applied immediately and unconditionally
+to every histogram this function loads, with no call site needing the
+unstyled objects first — unlike `run_templates.py`'s Chunk 5 decomposition
+(`_stage_xml_templates`/`_seed_prefit_parameters`), where splitting served
+a real, independent testability or reuse need, a separate
+`style_postfit_histograms()` here would only relocate four `Set*()` calls
+without changing what is tested or reused.
+
+### A third, related decision: where `ROOT.gStyle.SetOptStat(0)`/`ROOT.gROOT.SetBatch(True)` now live
+
+The original script executed these two calls at **import time**, before
+`argparse` even ran. The plan's decomposition table has no dedicated
+"setup" function for them, and logically they belong wherever `main()`'s
+orchestration begins — moved to the top of `main()`, called before
+`parse_args()`, preserving the exact original ordering relative to
+everything else. For the one real production call path (`python
+plotPostFit.py -i ... -o ...`, which always reaches `main()` via the
+`if __name__ == "__main__":` guard), behavior is unchanged bit-for-bit.
+The only behavioral difference is for a hypothetical bare `import
+plotPostFit` with `main()` never called — which nothing in this
+repository does (confirmed by `grep -rn "plotPostFit"` across the whole
+repository: only the two shell launchers invoke it, both as a
+subprocess). This is also a direct, verified testability payoff:
+`tests/test_plot_post_fit.py`'s `parse_args()` tests import the module
+with a bare, attribute-less `ROOT` stub (nothing beyond the module name
+needs to resolve) precisely because no ROOT attribute is touched at
+import time any more.
+
+### A verified byte-identical string-formatting rewrite
+
+`draw_postfit_canvas()`'s χ²/ndof text was built with implicit
+concatenation (`string = "#chi^{2}/ndof = "; string += f"{rchi2:.3f}"`);
+rewritten as a single f-string,
+`f"#chi^{{2}}/ndof = {rchi2:.3f}"`. Verified byte-identical in a live
+Python shell for a representative value (`rchi2 = 12.34567`) before
+relying on it — both forms produce `'#chi^{2}/ndof = 12.346'`.
+
+### New tests added (`tests/test_plot_post_fit.py`)
+
+- `test_parse_args_parses_required_flags`,
+  `test_parse_args_accepts_long_flags`,
+  `test_parse_args_requires_both_flags` (parametrized: no args, only
+  `-i`, only `-o`) — zero real ROOT: `parse_args()` never touches it, so
+  these import the module with a bare, attribute-less `ROOT` stub in
+  `sys.modules` (mirroring `test_run_anaFit.py`'s established stubbing
+  style) and call `parse_args()` directly.
+- `test_load_postfit_histograms_applies_styling_and_keeps_file_open` —
+  real ROOT, run as a subprocess snippet (after sourcing
+  `scripts/setup_buildAndFit.sh`, mirroring
+  `test_authoritative_setup_provides_scientific_runtime`'s probe
+  pattern) against the same real fixture Step A used; asserts every
+  styling call's exact effect (marker style/size/color, line
+  width/color) and that the returned `postfit_file` is still open with
+  usable histograms — the direct regression test for the file-lifetime
+  fix above.
+- `test_build_ratio_histogram_computes_real_ratio_and_styling` — per the
+  plan's own instruction, uses small real `ROOT.TH1D` objects built
+  in-test (no input file needed); asserts the actual computed ratio bin
+  contents (`10/5=2.0`, `20/40=0.5`) and every styling call's exact
+  effect, not just "was called."
+- `test_draw_postfit_canvas_returns_two_pad_canvas` — small real
+  `ROOT.TH1D`/`build_ratio_histogram()` output; asserts the returned
+  object `isinstance(..., ROOT.TCanvas)` and that its primitives include
+  pads named exactly `pad1`/`pad2`.
+
+All four new real-ROOT assertions (styling values, ratio bin contents,
+axis titles/divisions, marker style, pad names) were independently
+verified in a live, real-ROOT shell against this host's actual scientific
+runtime before being relied on in the tests, rather than hand-derived.
+
+### Confirm: no scientific behavior changed
+
+`plotPostFit.py` produces plots, not scientific acceptance results — it
+is excluded from the frozen `analysis_reference.json` contract (Tier 1,
+"Plotting separated from scientific acceptance"). Every ROOT call, in the
+same order, with the same arguments, was moved verbatim into its new
+function (the two deviations above — the returned `TFile` handle and the
+`gStyle`/`gROOT` call site — are both non-scientific, plot-only
+concerns, not fit/statistics logic, and both were verified empirically
+to reproduce the exact original end-to-end output: a real, non-empty
+PDF from the real J100 fixture, `python
+plotPostFit.py -i run/fits/J100/run_481_3000_sixPar/PostFit_anaFit_sixPar_bkgOnly.root
+-o <tmp>` → exit 0, `<tmp>` created and non-empty, run directly against
+this host's real scientific runtime after this commit's change, not
+just via the test suite).
+
+### Verification performed
+
+- `python -m pytest tests/test_plot_post_fit.py -v` → 9 passed (46.87s),
+  run for real against this host's actual CVMFS/LCG scientific runtime.
+- `python scripts/quality_check.py --mode full` → 176 passed, 2
+  deselected; ruff clean; black clean (27 files unchanged).
+- `python -m pytest tests/test_analysis_workflows_integration.py -m
+  "integration and requires_root" -v` → 1 passed, 2 deselected, in
+  145.24s (run in the background per this session's established practice
+  for this specific command, which regularly exceeds the foreground tool
+  timeout; this chunk is not one of Section 7's chunks where this gate is
+  strictly mandatory, but it is rerun here anyway as an extra safety net,
+  since this chunk changed real ROOT object-lifetime control flow — it
+  confirms the J100/J50 authoritative workflows, which both invoke
+  `plotPostFit.py`, still match the frozen scientific reference).
+- `git diff --check` → passed.
+- `grep -nE '[[:blank:]]+$' python/plotPostFit.py tests/test_plot_post_fit.py scripts/quality_check.py` →
+  no output.
+- `grep -n "plotPostFit" scripts/run_anaFit_J100.sh scripts/run_anaFit_J50.sh` →
+  both launchers' invocations (`python "$repo_dir/python/plotPostFit.py"
+  -i ... -o ...`) unchanged, confirming the public CLI contract this
+  refactor must not break.
+
+### Compliance review (Section 8, Extraction variant)
+
+1. Step A's commit (`d24d5bf`) is named above; this commit's Step A test
+   is kept unchanged, and five new tests are added for the newly-
+   introduced functions — none of the five are relocated, all are new.
+2. `tests/test_plot_post_fit.py`'s Step A test required no diff beyond
+   its position in the file (no import line existed to change, since it
+   was always subprocess-based).
+3. Production code (the two shell launchers) is unchanged and still
+   calls the script's unchanged public CLI contract — confirmed by grep,
+   not assumed.
+4. `python/plotPostFit.py` does not import from `run_anaFit.py` or any
+   of the seven extracted `run_anaFit.py` modules — it was never part of
+   that module system; it is its own standalone script under `python/`.
+5. Required Section 7 gates ran; output captured above.
+6. Activity-log entry appended (this content), not a rewrite of any
+   existing section.
+
+### Remaining open chunks
+
+Chunk 11 (`plot_postfit.cpp`) and Chunk 12
+(`doc/TIER3_SYSTEM.md`) are open.
+
+## 2026-09-03: Fix plot_post_fit real-ROOT tests failing in CI (no CVMFS mount)
+
+### Objective
+
+The GitHub Actions CI run for this branch (`ubuntu`-hosted runner,
+`/home/runner/work/FrequentistFramework/FrequentistFramework`) reported
+`quality_check.py --mode full` failing with 4 real failures in
+`tests/test_plot_post_fit.py`:
+`test_load_postfit_histograms_applies_styling_and_keeps_file_open`,
+`test_build_ratio_histogram_computes_real_ratio_and_styling`,
+`test_draw_postfit_canvas_returns_two_pad_canvas`, and
+`test_plot_post_fit_script_produces_nonempty_pdf_for_real_fixture` — each
+failing with `scripts/setup_buildAndFit.sh: line 12:
+/cvmfs/atlas.cern.ch/repo/ATLASLocalRootBase/user/atlasLocalSetup.sh: No
+such file or directory`. This is a genuine, verified environment gap, not
+a false report: the GitHub Actions runner has no CVMFS mount at all, so
+any test that actually sources `scripts/setup_buildAndFit.sh` cannot pass
+there, regardless of ROOT/RooFit correctness.
+
+### The actual bug: an incorrect marker decision in Chunk 10.A/10.B
+
+Chunk 10.A's activity-log entry recorded a marker decision: mark these
+tests `@pytest.mark.requires_root` only, reasoning from
+`doc/TIER2_SYSTEM.md`'s literal marker definitions ("`requires_root`:
+needs the configured ROOT/RooFit runtime", "`requires_analysis_dependencies`:
+needs prepared external checkouts") that a test needing only ROOT (not
+built `XMLReader`/`quickFit`/`pyBumpHunter` binaries) should not need the
+second marker. **This reasoning was wrong in practice**: it did not
+account for `test_authoritative_setup_provides_scientific_runtime` (in
+`tests/test_analysis_workflows_integration.py`) already being marked
+**both** `@pytest.mark.requires_root` and
+`@pytest.mark.requires_analysis_dependencies`, despite doing exactly the
+same thing these four new tests do - sourcing
+`scripts/setup_buildAndFit.sh` in a subprocess. That existing precedent
+should have been followed literally instead of re-derived abstractly from
+the marker-name definitions. The real, load-bearing distinction is not
+"does it need XMLReader/quickFit/pyBumpHunter" but "does it need CVMFS
+mounted at all" - and every test that sources
+`scripts/setup_buildAndFit.sh` needs CVMFS, full stop.
+
+This bug only surfaced in CI, not in this developer's own session, because
+this session's environment (`afs.cern.ch`, with CVMFS mounted) satisfies
+both markers' conditions simultaneously - `requires_root` alone was
+sufficient there to reach a real, working ROOT runtime, masking the
+missing `requires_analysis_dependencies` marker's actual purpose (keeping
+the test out of the *ordinary*, CVMFS-less CI gate in the first place).
+
+### Fix
+
+Added `@pytest.mark.requires_analysis_dependencies` alongside the
+existing `@pytest.mark.requires_root` on all four real-ROOT tests in
+`tests/test_plot_post_fit.py` (the three added in Chunk 10.B, plus the
+end-to-end test carried over unchanged from Chunk 10.A/Step A). No test
+body, fixture, or assertion changed - only the marker decorators. This
+matches `test_authoritative_setup_provides_scientific_runtime`'s own
+markers exactly, and restores `doc/TIER2_SYSTEM.md`'s stated contract:
+"the ordinary gate excludes tests marked `requires_analysis_dependencies`
+and does not include the integration test file."
+
+`test_parse_args_*` (5 tests) are unaffected - they never touch ROOT or
+CVMFS and continue to run in the ordinary gate, exactly as they did in
+CI's own run (`.....FFFF` in the CI log: 5 passes, then the 4 real-ROOT
+failures, confirming the split was already correct for those five).
+
+### Verification performed
+
+- `python -m pytest tests/test_plot_post_fit.py -v` (no marker filter,
+  matching Chunk 10's own acceptance check, run for real against this
+  host's actual CVMFS/LCG scientific runtime) → 9 passed (46.38s) -
+  unaffected by the marker-only change.
+- `python -m pytest -m "not requires_analysis_dependencies"
+  tests/test_plot_post_fit.py -v` (reproducing `quality_check.py`'s own
+  filter, matching what CI actually runs) → 5 passed, 4 deselected - the
+  four CVMFS-dependent tests are now correctly excluded from exactly the
+  gate that failed in CI.
+- `python scripts/quality_check.py --mode full` → 172 passed, 6
+  deselected (2 pre-existing + these 4, newly and correctly excluded);
+  ruff clean; black clean (27 files unchanged).
+- `git diff --check` → passed.
+- `grep -nE '[[:blank:]]+$' tests/test_plot_post_fit.py` → no output.
+
+### What this commit does NOT do
+
+Does not touch `python/plotPostFit.py` (production code) at all - this is
+a test-marker-only fix. Per the append-only guardrail, Chunk 10.A's and
+10.B's entries above are left exactly as written, including 10.A's now-
+superseded "marker decision" reasoning and 10.B's verification section
+(which reported results from this developer's own CVMFS-mounted session,
+still accurate for that environment) - this section is the correction of
+record for what CI itself actually needs.
+
+## 2026-09-03: Fix plotPostFit.py's module-level ROOT coupling and a real legend-lifetime bug (GitHub Copilot review, PR #6)
+
+### Finding 1: `parse_args()` still needed ROOT to import
+
+Copilot: "The extracted `parse_args()` API is still impossible to import
+in the repository's ROOT-less Python environment because ROOT is
+imported unconditionally here. This also conflicts with Chunk 10's
+explicit requirement that `parse_args()` be tested with zero stubbing;
+the new tests only pass by injecting a fake ROOT module. Please defer
+ROOT imports to the ROOT-dependent functions."
+
+Verified: correct. `python/plotPostFit.py` had `import ROOT` at module
+scope (left there after Chunk 10.B's own decision to move
+`ROOT.gStyle`/`ROOT.gROOT.SetBatch()` into `main()`, without going the
+rest of the way and deferring the bare `import ROOT` statement itself).
+`doc/TIER3_COMPLETION_PLAN.md`'s own Chunk 10 text states `parse_args()`
+"needs no ROOT at all and should be tested with zero stubbing" -
+Chunk 10.B's tests instead stubbed `sys.modules["ROOT"]` with a bare
+`ModuleType`, satisfying the letter of "the module imports" but not
+"zero stubbing."
+
+Fix: removed the module-level `import ROOT` entirely. `import ROOT` is
+now deferred inside each function that actually touches it -
+`load_postfit_histograms()`, `draw_postfit_canvas()`, `main()` - matching
+`doc/TIER3_COMPLETION_PLAN.md` Section 4.2's deferred-import rule already
+applied to every other ROOT-touching function across this whole Tier 3
+plan (this file was simply not brought fully into line with it in Chunk
+10.B). `build_ratio_histogram()` needed no `ROOT` import at all, even
+before this fix - it only calls methods on the histogram objects passed
+to it. `PostfitHistograms`'s field type hints (`"ROOT.TH1"`) are string
+literals, never evaluated at runtime, so they impose no import
+requirement; a `if TYPE_CHECKING: import ROOT` guard was added so
+`ruff`'s `F821` (undefined name in a string annotation) stays satisfied
+without a real runtime import.
+
+`tests/test_plot_post_fit.py` updated to match: the
+`_import_plot_post_fit_with_stubbed_root()` helper is gone; the module is
+now imported once, plainly, at the top of the test file
+(`from python import plotPostFit as plot_post_fit`), exactly like
+`test_run_manifest.py`/`test_run_execution.py` already do for their own
+ROOT-free modules. The three `parse_args()` tests no longer take a
+`monkeypatch` fixture at all.
+
+Verified directly, twice: (1) `python -c "import sys;
+sys.path.insert(0, 'python'); import plotPostFit as ppf;
+ppf.parse_args(['-i','a','-o','b']); print('ROOT' in sys.modules)"` →
+prints `False` - the module imports and `parse_args()` runs with zero
+ROOT presence in `sys.modules`, real or fake. (2) the full test file
+still passes for real against this host's actual ROOT runtime for the
+other four tests, which still need it.
+
+### Finding 2: the canvas-content test was too weak - and while fixing it, a real bug was found
+
+Copilot: "This test only verifies that two named pads exist, so it still
+passes if the refactor drops the data/postfit plots, ratio, legend, or
+chi2 annotation - the actual behavior of `draw_postfit_canvas()`. The
+end-to-end test's non-empty-PDF check would also pass for an effectively
+empty canvas. Please assert the expected primitives/content in each pad."
+
+Verified, and this surfaced something worse than a coverage gap: while
+building a stronger test, `draw_postfit_canvas()`'s legend was found to
+be **actually missing** from its own output, right now, in the code
+already committed for Chunk 10.B - a real regression Copilot's coverage
+concern would have caught, had the stronger test existed from the start.
+
+Reproduced directly, isolated from the rest of the function: `legend =
+ROOT.TLegend(...); legend.AddEntry(...); legend.Draw()` inside a
+function, with `legend` never referenced again after that function
+returns, produces a `TCanvas` whose pad contains **no `TLegend` at all**
+- `[p.ClassName() for p in pad1.GetListOfPrimitives()]` came back
+`['TH1D', 'TH1D']` with no `TLegend` present. Cause: cppyy (PyROOT) owns,
+and therefore deletes, the underlying C++ object of any `TObject` it
+constructed once the Python wrapper's reference count reaches zero -
+`legend` was a purely local variable inside `draw_postfit_canvas()` with
+no reference surviving the function's return, so it was garbage-collected
+before the caller ever saw the canvas. This is the exact same class of
+hazard already found and fixed for `load_postfit_histograms()`'s `TFile`
+in Chunk 10.B (see that entry above), now found a second time for a
+different object - both hazards exist only because the original,
+single-scope script kept every such object alive as a script-level name
+for its entire run, a guarantee that silently broke the moment the code
+was split into functions with their own local scopes.
+
+Fix: `ROOT.SetOwnership(legend, False)` immediately after constructing
+the legend, telling cppyy the C++ side now owns it, so it survives after
+the Python reference is gone. Verified directly: with the fix reverted
+locally, `[p.ClassName() for p in pad1.GetListOfPrimitives()]` came back
+without `TLegend`; with it restored, `['TH1D', 'TH1D', 'TLegend', ...]`.
+The end-to-end script's output PDF also grew from 170489 to 170679 bytes
+once the legend was actually being drawn again - independent, physical
+corroboration.
+
+`draw_postfit_canvas()`'s test
+(`test_draw_postfit_canvas_returns_two_pad_canvas`, renamed
+`test_draw_postfit_canvas_draws_expected_content_in_each_pad`) rewritten
+to assert real content per pad, not just pad names: pad1's two `TH1D`
+histograms by name (`data`/`postfit`), exactly one `TLegend` with exactly
+the two expected `(label, option)` entries (`("Data", "lep")`,
+`("Postfit", "l")`), a `TLatex` whose exact title is the rendered
+`#chi^{2}/ndof = ...` string; pad2's single `TH1D` by name (the ratio
+histogram's own name). This test was confirmed to **fail** with
+`AssertionError: legend missing or duplicated in pad1` against the
+`ROOT.SetOwnership(...)`-reverted code, and to pass against the fix -
+the direct regression test for this bug, exactly the protection Copilot
+asked for.
+
+### Verification performed
+
+- `python -m pytest tests/test_plot_post_fit.py -v` → 9 passed (~50-67s
+  across repeated runs), run for real against this host's actual
+  CVMFS/LCG scientific runtime.
+- `python scripts/quality_check.py --mode full` → 172 passed, 6
+  deselected; ruff clean; black clean (27 files unchanged).
+- `python "$repo_dir/python/plotPostFit.py" -i
+  run/fits/J100/run_481_3000_sixPar/PostFit_anaFit_sixPar_bkgOnly.root -o
+  <tmp>` (direct end-to-end invocation, matching the launchers exactly) →
+  exit 0, `<tmp>` created, 170679 bytes.
+- `python -m pytest tests/test_analysis_workflows_integration.py -m
+  "integration and requires_root" -v` → 1 passed, 2 deselected, in
+  165.61s (run in the background per this session's established
+  practice) - confirms the J100/J50 authoritative workflows, which both
+  invoke `plotPostFit.py`, still match the frozen scientific reference
+  after both fixes.
+- `git diff --check` → passed.
+- `grep -nE '[[:blank:]]+$' python/plotPostFit.py tests/test_plot_post_fit.py` →
+  no output.
+
+### What this commit does NOT do
+
+Both fixes are confined to `python/plotPostFit.py` and
+`tests/test_plot_post_fit.py`. No other file changed. Per the append-only
+guardrail, Chunk 10.A's and 10.B's entries above are left exactly as
+written - this section is the correction of record for both Copilot
+findings.
+
+## 2026-09-03: Tier-3 refactoring — Chunk 11.A: characterization test for `plot_postfit.cpp`
+
+### Objective
+
+Pin down the current, unmodified behavior of `plot_postfit.cpp`
+(repository root) before splitting it into `read_bumphunter_results()`,
+`load_postfit_histograms()`, `draw_residual_panel()`, and a slimmed
+`plot_postfit()` orchestrator, per `doc/TIER3_COMPLETION_PLAN.md` Chunk
+11. The file has one function today, `plot_postfit(char const * in_dir,
+char const * pars_str)` - no existing function boundary to characterize
+more precisely yet, and no test harness of any kind exists for ROOT
+macros anywhere in this repository, so, per Chunk 11's own instruction,
+Step A characterizes the **whole macro's current output**, run for real
+as a subprocess.
+
+### Target function (as it exists today)
+
+| Function | Inputs | Outputs | Side effects |
+|---|---|---|---|
+| `void plot_postfit(char const * in_dir, char const * pars_str)` | `in_dir: char const *` (a fit output directory), `pars_str: char const *` (e.g. `"six"`) | `void` | opens up to four `TFile`s under `in_dir` (native/masked PostFit + FitParameters); `exit(1)` if the native residual/chi2 histograms are missing; optionally parses `<in_dir>/BHresults.json` via regex for BumpHunter results, falling back to `bump_hunter = false` when the file is absent; draws three residual panels (params, native, native-rebinned) to a canvas; writes `<in_dir>/post_fit.pdf` via `TCanvas::Print` |
+
+### Test infrastructure decision
+
+Per Chunk 11's own instruction: a small ROOT test macro invoked via
+`root -l -b -q` from a `pytest` wrapper (`subprocess.run`), so it reports
+through the same `pytest`-based gates as everything else rather than
+inventing a second CI mechanism. `plot_postfit.cpp` needs a real ROOT
+runtime this repository's own pytest dev venv does not have (confirmed
+directly, same situation already documented for
+`python/plotPostFit.py`'s ROOT dependency and
+`tests/test_analysis_workflows_integration.py`'s scientific-runtime
+tests) - it is only ever invoked in production after
+`scripts/setup_buildAndFit.sh` has been sourced (see
+`scripts/run_anaFit_J100.sh`/`run_anaFit_J50.sh`, both of which run
+`root -l -q "plot_postfit.cpp(\"$folder\", \"$pars\")"` after sourcing
+that script). The new test sources that same setup script itself inside
+a `subprocess.run(["bash", "-lc", ...])` call before invoking the macro,
+mirroring the exact probe pattern already established by
+`tests/test_plot_post_fit.py`'s own end-to-end test and
+`test_authoritative_setup_provides_scientific_runtime`.
+
+Marked both `@pytest.mark.requires_root` and
+`@pytest.mark.requires_analysis_dependencies` from the start this time -
+applying the lesson from the CI-failure fix earlier today (see that
+entry above): any test that actually sources
+`scripts/setup_buildAndFit.sh` needs CVMFS mounted, so it must carry both
+markers to stay out of the CVMFS-less ordinary CI gate, regardless of
+whether it also needs built `XMLReader`/`quickFit`/`pyBumpHunter`
+binaries specifically.
+
+### Test added (`tests/test_plot_postfit_macro.py`, new file)
+
+- `test_plot_postfit_macro_produces_nonempty_pdf_for_real_fixture` - runs
+  the real, unmodified macro as a subprocess (via the
+  `setup_buildAndFit.sh`-sourcing probe described above) against a
+  `tmp_path` **copy** of the already-committed
+  `run/fits/J100/run_481_3000_sixPar/` fixture directory (never written
+  into the tracked fixture itself - the macro writes `post_fit.pdf` into
+  `in_dir`), with `pars_str = "six"`. This fixture directory has no
+  `BHresults.json` and no `*_masked.root` files, confirmed by direct
+  listing - exercising the current no-BumpHunter fallback path
+  (`bump_hunter = false`) exactly as Chunk 11 specifies. Asserts the
+  process exits `0` and `post_fit.pdf` exists and is non-empty in the
+  copied directory.
+
+Per the plan's own instruction (and Tier 1's existing "Plotting separated
+from scientific acceptance" policy, already cited for
+`tests/test_plot_post_fit.py`), **byte-identical PDF comparison is
+deliberately not attempted** - "runs successfully against a real fixture
+and produces a real, non-empty plot" is the chosen, and only,
+characterized invariant. As independent, incidental corroboration (not a
+relied-upon assertion): the macro's real output PDF came back exactly
+41589 bytes in this session, byte-for-byte identical to the already-
+committed `post_fit.pdf` sitting in the tracked fixture directory from an
+earlier real production run of this exact, unmodified macro against this
+exact fixture - consistent with, though not proof of, a fully
+deterministic PDF for this specific ROOT/font/data combination.
+
+### What this commit does NOT do
+
+No production file was modified. `git status --short` shows only
+`tests/test_plot_postfit_macro.py` as untracked (new); `git diff --stat`
+is empty - `plot_postfit.cpp` itself was never touched. Per Chunk 11's
+own text, no `scripts/quality_check.py` registration applies to this
+file (it only covers Python files) - `tests/test_plot_postfit_macro.py`
+is a Python test file and could in principle be registered, but Chunk 11
+explicitly does not require it (unlike Chunks 9/10's Python production
+targets), so registration is deferred to a decision recorded in Step B
+below rather than assumed here.
+
+### Verification performed
+
+- `python -m pytest tests/test_plot_postfit_macro.py -v` → 1 passed
+  (19.83s), run for real against this host's actual CVMFS/LCG scientific
+  runtime.
+- `python scripts/quality_check.py --mode full` → 172 passed, 6
+  deselected; ruff clean; black clean (27 files unchanged) - unaffected,
+  confirming the new file doesn't touch anything already gated.
+- `python -m ruff check tests/test_plot_postfit_macro.py` /
+  `python -m black --check tests/test_plot_postfit_macro.py` → both
+  clean already.
+- `git diff --check` → passed.
+- `grep -nE '[[:blank:]]+$' tests/test_plot_postfit_macro.py` → no
+  output.
+
+### Compliance review (Section 8, Characterization variant)
+
+1. Chunk 11, Step A.
+2. `plot_postfit.cpp` untouched; only
+   `tests/test_plot_postfit_macro.py` (new, untracked) added.
+3. The new test asserts real, specific behavior (real process exit code,
+   real non-empty PDF file on disk from a real ROOT fixture) - not merely
+   "does not raise."
+4. The test was run against the unmodified target file, for real, against
+   this host's actual scientific runtime, before any production change;
+   the exact result (1 passed, 19.83s) is reported above for review.
+5. Human-verification checkpoint: presented to the user in session for
+   confirmation before Step B's commit is made (recorded per Step B's own
+   activity-log entry once given).
+
+### Remaining open chunks
+
+Chunk 11.B (extraction of `read_bumphunter_results`/
+`load_postfit_histograms`/`draw_residual_panel`) and Chunk 12 are open.
+
+## 2026-09-03: Tier-3 refactoring — Chunk 11.B: extract functions from `plot_postfit.cpp`
+
+### Objective
+
+Move `plot_postfit.cpp`'s single 257-line function, characterized and
+human-verified in Step A (commit `2b7d168`), into `read_bumphunter_results()`,
+`load_postfit_histograms()`, `draw_residual_panel()`, plus a slimmed
+`plot_postfit()` orchestrator with its public entry point's exact name and
+parameter order unchanged, per `doc/TIER3_COMPLETION_PLAN.md` Chunk 11.
+
+### What changed
+
+- `plot_postfit.cpp` restructured in place into:
+  - `struct BumpHunterInfo { float global_pval, significance, mask_min,
+    mask_max; bool available; }` and `BumpHunterInfo
+    read_bumphunter_results(string const & bh_log_name)` - the log-reading/
+    regex-parsing block moved verbatim, including its diagnostic prints
+    (`cout << bh_log_name << endl;` and the "WARNING: Could not parse
+    values..." message). `available` matches the original's
+    `bump_hunter = false` fallback exactly: `false` only when the log file
+    could not be opened, `true` otherwise - not an exception.
+  - `struct PostfitHistograms` (the ten `TH1D*` fields, renamed without
+    their `h_`/`_native`/`_masked` prefixes since they're now struct
+    members: `native`, `native_rebinned`, `native_chi2`,
+    `native_chi2_rebinned`, `masked`, `masked_rebinned`, `masked_chi2`,
+    `masked_chi2_rebinned`, `native_params`, `masked_params`) and
+    `PostfitHistograms load_postfit_histograms(TFile * native, TFile *
+    masked, TFile * native_params, TFile * masked_params)` - the
+    `Get<TH1D>` block moved verbatim, including the pre-existing
+    behavior that `native_params`/`masked_params` are dereferenced
+    unconditionally inside the `if (native)`/`if (masked)` guards, with
+    no null check of their own (see "Preserved pre-existing landmine"
+    below).
+  - `enum class ResidualPanelKind { kParams, kNative, kNativeRebinned }`
+    and `struct ResidualPanelInfo { ResidualPanelKind kind; float
+    native_chi2_ndof, native_pval, masked_chi2_ndof, masked_pval; }` -
+    **new**, not in the plan's literal table (see "A real gap in the
+    plan's stated signature" below).
+  - `void draw_residual_panel(TCanvas * can, TH1D * first, TH1D * second,
+    bool bump_hunter, BumpHunterInfo const & bh, char const * pars_str,
+    char const * out_file_name, ResidualPanelInfo const & info)` - the
+    body of the original for-loop, moved verbatim, with every `h.first ==
+    h_native_params`/`h.first == h_native`/`h.first == h_native_rebinned`
+    pointer-identity check replaced by `info.kind ==
+    ResidualPanelKind::k...`, and the scalar chi2/pval `Form(...)` calls
+    reading from `info.native_chi2_ndof`/etc. instead of outer-scope
+    variables.
+  - `void plot_postfit(char const * in_dir, char const * pars_str)`
+    (unchanged signature) - becomes the orchestrator: builds the six
+    input/output paths (unchanged), opens the four `TFile`s (unchanged),
+    calls `load_postfit_histograms()`, `read_bumphunter_results()`,
+    computes `bump_hunter = plot_masked && bh_info.available` (see
+    "Preserving `plot_masked`'s exact role" below), computes the ten
+    chi2/pval/nbkg scalars (moved verbatim, now reading from the
+    `PostfitHistograms` struct's fields instead of individually-named
+    pointers), opens the canvas/PDF, then loops over the three panels
+    (`{h.native_params, h.masked_params, kParams}`,
+    `{h.native, h.masked, kNative}`, `{h.native_rebinned,
+    h.masked_rebinned, kNativeRebinned}`) calling `draw_residual_panel()`
+    once per pair, per the plan's own "the existing loop... calls this
+    once per pair instead of repeating the body inline" instruction.
+- `tests/root_macros/BHresults_sample.json` (**new, tracked fixture**) -
+  a small, hand-written JSON with known values
+  (`global_Pval: 0.1234, significance: 2.5, MaskMin: 500.0, MaskMax: 700.0`),
+  since this repository's existing J100 canonical run has no
+  `BHresults.json` (it is unmasked). The regex `read_bumphunter_results()`
+  uses does a flat text scan, not real JSON-schema-aware parsing (verified
+  directly against `python/FindBHWindow.py`, the actual producer of real
+  `BHresults.json` files - its `global_Pval`/`significance` keys live
+  nested inside a `pyBHresult` sub-object, not top-level; the regex finds
+  them regardless of nesting depth), so a flat fixture exercises the exact
+  same code path as a real, nested production file.
+- `tests/root_macros/test_read_bumphunter_results.cpp` (**new**) - the
+  first-ever ROOT-macro unit test in this repository, per Chunk 11's own
+  instruction. `#include "../../plot_postfit.cpp"` to reach
+  `BumpHunterInfo`/`read_bumphunter_results()` directly (a fresh `root -l
+  -b -q` process per invocation, so no redefinition risk from including a
+  `.cpp` without an include guard). Calls `read_bumphunter_results()`
+  against the fixture above and asserts each `BumpHunterInfo` field
+  against the fixture's known values (tolerance `1e-4f`, matching
+  `stof`'s own float precision), then against `<fixture>.does_not_exist`
+  and asserts `available == false` and all four scalar fields stay at
+  their zero-initialized defaults. Prints `TEST_READ_BUMPHUNTER_RESULTS_OK`/
+  `_FAILED` and exits `0`/`1` accordingly - explicit `if (!...) { cout <<
+  "FAIL: ..."; ok = false; }` checks were used instead of `assert()`, to
+  avoid depending on whether this ROOT build's Cling compiles with
+  `NDEBUG` defined.
+- `tests/test_read_bumphunter_results.py` (**new**) - the thin
+  Python/pytest wrapper invoking the macro above via `subprocess.run`,
+  matching `tests/test_plot_postfit_macro.py`'s own wrapper pattern
+  exactly (same `setup_buildAndFit.sh`-sourcing probe, same two markers).
+- `tests/test_plot_postfit_macro.py`'s existing test kept unchanged - it
+  is now an end-to-end regression test of the rewritten `plot_postfit()`,
+  still valuable (per Chunk 11's own instruction to keep it, not delete
+  it).
+- No `scripts/quality_check.py` registration - it only covers Python
+  files, and Chunk 11 doesn't require registering the two new Python test
+  files either (unlike Chunks 9/10's Python production targets).
+
+### A real gap in the plan's stated `draw_residual_panel()` signature
+
+`doc/TIER3_COMPLETION_PLAN.md`'s Chunk 11 table gives
+`draw_residual_panel()` exactly seven parameters: `(TCanvas* can, TH1D*
+first, TH1D* second, bool bump_hunter, BumpHunterInfo const& bh, char
+const* pars_str, char const* out_file_name)`. Implementing this literally
+is impossible without losing real, observable behavior: the original
+loop's panel-specific content - Y-axis range, draw option ("HIST" vs
+plain), whether the zero-line and per-panel "range: ... GeV" text are
+drawn, whether the "Bump Hunter" header and global p-val/significance/
+mask-range text appear, and which of the four chi2/ndof-and-p-val text
+boxes are shown - is driven by two things neither struct nor scalar
+parameter in that seven-parameter list can express: (1) **which** of the
+three panels this call is drawing (originally `h.first ==
+h_native_params`/`h_native`/`h_native_rebinned` pointer-identity checks
+against outer-scope variables `draw_residual_panel()` no longer has
+access to), and (2) the four scalar chi2/ndof and p-value numbers each
+panel displays (`native_chi2_ndof`, `native_pval`, `masked_chi2_ndof`,
+`masked_pval`, each with a separately-computed "rebinned" variant used
+only by the rebinned panel) - values the plan's own `PostfitHistograms`
+struct doesn't carry either (they are computed in `plot_postfit()`
+*after* `load_postfit_histograms()` returns, straight from
+`GetBinContent()` calls).
+
+Corrected: added `ResidualPanelKind` (an explicit tag replacing the
+pointer-identity checks) and `ResidualPanelInfo` (bundling the tag with
+the four scalar values relevant to whichever panel is being drawn) as an
+eighth parameter. This is the smallest addition that preserves every
+originally-observable difference between the three panels; verified
+directly (see "Verification performed" below) that the rewritten macro,
+run against the same fixture Step A characterized, produces a PDF
+byte-identical to both Step A's own captured output and the already-
+committed reference `post_fit.pdf` in the tracked fixture directory - not
+just "runs and produces a plot", but the exact same plot.
+
+### Preserving `plot_masked`'s exact role
+
+The original set `bool bump_hunter{plot_masked};` (a file-scope `bool
+const plot_masked{true}`), then only ever set it to `false` in the `else`
+branch when the BumpHunter log could not be opened - meaning `bump_hunter`
+equals `plot_masked` whenever the log **can** be opened, and `false`
+otherwise. Since `read_bumphunter_results()`'s new signature takes only
+`bh_log_name` (per the plan), it cannot see `plot_masked` itself.
+`plot_postfit()` now computes `bump_hunter = plot_masked &&
+bh_info.available;` - the exact logical equivalent (`available` is
+`false` only when the file could not be opened, matching the original
+`else` branch precisely; `plot_masked && true == plot_masked`, matching
+the original `if` branch precisely), keeping `plot_masked` as a real,
+still-honored toggle rather than silently dropping its effect.
+
+### Preserved pre-existing landmine (guardrail 1: no fix, just documented)
+
+`load_postfit_histograms()` dereferences `native_params->Get<TH1D>(...)`
+unconditionally inside the `if (native)` block (and
+`masked_params->Get<TH1D>(...)` inside `if (masked)`), with no null check
+of `native_params`/`masked_params` themselves - if the native `PostFit_*`
+file opens successfully but the corresponding `FitParameters_*` file does
+not, this crashes on a null-pointer dereference. This is pre-existing
+behavior in the original, unmodified `plot_postfit()` (confirmed by
+re-reading the source before moving anything), not something this
+refactor introduced or is asked to fix (guardrail: "no scope for fixing
+pre-existing, unrelated issues noticed along the way") - moved verbatim,
+landmine included, exactly as guardrail 6 requires for the `nPars`
+double-match quirk found in Chunk 5.
+
+### Dead-code cleanup
+
+`bool is_rebinned{false};` (declared in the original loop, immediately
+before the `for` loop it was presumably meant to help control) is never
+read anywhere in the function - confirmed by `grep -n "is_rebinned"
+plot_postfit.cpp` returning only its own declaration line. Dropped as
+mechanical, zero-behavior-change cleanup, matching this project's
+established practice (e.g. Chunk 8/9's dead-import removals) for a file
+newly being reorganized.
+
+### Confirm: no scientific behavior changed
+
+`plot_postfit.cpp` produces plots, not scientific acceptance results - it
+is excluded from the frozen `analysis_reference.json` contract (Tier 1,
+"Plotting separated from scientific acceptance"), same as
+`python/plotPostFit.py`. Every ROOT call, in the same order, with the
+same arguments, was moved verbatim into its new function; the two
+additions above (`ResidualPanelKind`/`ResidualPanelInfo`, and the
+`plot_masked && bh_info.available` equivalence) are both non-scientific,
+plot-only/control-flow concerns, verified empirically, not just argued:
+run directly against a `tmp_path` copy of the real J100 fixture
+(no `BHresults.json`, exercising the no-BumpHunter fallback path), the
+rewritten macro exits `0` and produces `post_fit.pdf` at **exactly
+41589 bytes** - byte-for-byte identical to both Step A's own captured
+output and the already-committed `post_fit.pdf` sitting in the tracked
+fixture directory from an earlier real production run of the original,
+unmodified macro against this exact fixture. `guardrail 11` (no new
+external library linked) confirmed by diffing the file's `#include` list
+before and after: unchanged.
+
+The `bump_hunter == true` (masked-fit) branch inside `draw_residual_panel()`
+is **not** exercised by any automated test at this repository state - it
+was not exercised by any automated test before this refactor either (no
+masked fixture exists; the plan explicitly scopes synthetic ROOT-file-
+construction fixtures for the masked path out of this chunk, see below),
+so this refactor introduces no new risk there relative to what already
+existed. As independent evidence that this branch is at least still
+syntactically/type-correct: C++ does not skip compiling an `if` branch
+that happens not to execute at runtime, so Cling's successful compilation
+and 0-exit run of the whole macro (with `bump_hunter == false` this run)
+already exercised compiling the `if (bump_hunter) { ... }` branch's code,
+even though it did not execute it.
+
+### Deliberate scope boundary (to be restated in `doc/TIER3_SYSTEM.md`, Chunk 12)
+
+Per the plan's own instruction, `load_postfit_histograms()` is not given
+its own dedicated unit test - it is "harder to test in isolation without
+a real `TFile`", and inventing a synthetic ROOT-file-construction fixture
+for it is explicitly out of this chunk's scope. It remains covered only by
+`tests/test_plot_postfit_macro.py`'s existing end-to-end test. Likewise,
+`draw_residual_panel()`'s `bump_hunter == true` path (see above) has no
+dedicated test either - this is a slightly broader boundary than the plan
+states explicitly for `load_postfit_histograms()` alone, but follows the
+same underlying constraint (no masked/BumpHunter fixture exists in this
+repository to exercise it against). Both are deliberate, explained scope
+boundaries, not silent gaps - flagged here for Chunk 12 to restate in
+`doc/TIER3_SYSTEM.md`'s "Known Limitations" section.
+
+### Verification performed
+
+- `python -m pytest tests/test_plot_postfit_macro.py
+  tests/test_read_bumphunter_results.py -v` → 2 passed (36.62s), run for
+  real against this host's actual CVMFS/LCG scientific runtime - the
+  exact acceptance-check command Chunk 11 specifies.
+- Direct macro invocation (`root -l -b -q "plot_postfit.cpp(\"<tmp copy
+  of the J100 fixture>\", \"six\")"`, matching the launchers exactly) →
+  exit `0`, `post_fit.pdf` created at exactly 41589 bytes - byte-
+  identical to Step A's own characterization run and to the already-
+  committed reference PDF.
+- Negative control for the new ROOT-macro unit test: re-ran
+  `test_read_bumphunter_results.cpp` against a deliberately corrupted
+  fixture copy (`global_Pval` changed from `0.1234` to `0.9999`) →
+  `FAIL: global_pval = 0.9999, expected 0.1234`,
+  `TEST_READ_BUMPHUNTER_RESULTS_FAILED`, exit `1` - confirms the test
+  actually catches a wrong value, not just "does not crash."
+- `python scripts/quality_check.py --mode full` → 172 passed, 6
+  deselected; ruff clean; black clean (27 files unchanged) - unaffected,
+  confirming the two new Python files don't touch anything already
+  gated (no registration applies to this chunk).
+- `python -m ruff check tests/test_read_bumphunter_results.py` /
+  `python -m black --check tests/test_read_bumphunter_results.py` → both
+  clean already.
+- `python -m pytest tests/test_analysis_workflows_integration.py -m
+  "integration and requires_root" -v` → 1 passed, 2 deselected, in
+  153.99s (run in the background per this session's established
+  practice, as an extra safety net - not one of Section 7's strictly-
+  mandatory chunks, but this chunk rewrote production code the real
+  launchers invoke) - confirms the J100/J50 authoritative workflows,
+  which both invoke `plot_postfit.cpp`, still match the frozen
+  scientific reference.
+- `git diff --check` → passed.
+- `grep -nE '[[:blank:]]+$' plot_postfit.cpp
+  tests/root_macros/test_read_bumphunter_results.cpp
+  tests/root_macros/BHresults_sample.json
+  tests/test_read_bumphunter_results.py` → no output.
+- `grep -n "#include\|#pragma" plot_postfit.cpp` (before vs. after) →
+  identical include list, confirming guardrail 11.
+
+### Compliance review (Section 8, Extraction variant)
+
+1. Step A's commit (`2b7d168`) is named above; this commit's Step A test
+   is kept unchanged as an end-to-end regression test; the new
+   `read_bumphunter_results()` unit test is new, not relocated (no prior
+   test existed to relocate).
+2. Not applicable in the usual sense: `tests/test_plot_postfit_macro.py`
+   never imported `plot_postfit.cpp` (it always ran it as a subprocess),
+   so there is no import line to diff.
+3. Production code (the three shell launchers using `plot_postfit.cpp`)
+   is unchanged, and `plot_postfit()`'s public entry point retains its
+   exact original name and parameter order - confirmed by grep, not
+   assumed.
+4. No extracted function imports from `run_anaFit.py` or any Python
+   module - this chunk is pure C++, unrelated to that module system.
+5. Required Section 7 gates ran; output captured above, including the
+   extra, non-mandatory integration-gate rerun.
+6. Activity-log entry appended (this content), not a rewrite of any
+   existing section.
+
+### Remaining open chunks
+
+Chunk 12 (`doc/TIER3_SYSTEM.md`) is the only chunk left.
+
+## 2026-09-03: Tier-3 refactoring — Chunk 12: `doc/TIER3_SYSTEM.md` and final documentation
+
+### Objective
+
+Write `doc/TIER3_SYSTEM.md`, modeled on `doc/TIER1_SYSTEM.md`/
+`doc/TIER2_SYSTEM.md`'s structure, per `doc/TIER3_COMPLETION_PLAN.md`
+Chunk 12 - the final chunk, completing the plan. Single commit, no
+production code change: like Chunk 8, guardrail 3's Step A/Step B
+two-step pattern does not apply here, since there is no new target
+function to characterize first.
+
+### What changed
+
+`doc/TIER3_SYSTEM.md` created (new file), containing, at minimum, per
+Chunk 12's own required-contents list:
+
+- the module tables from the plan's Sections 4.1 and 4.3, updated with
+  actual final function signatures - read directly from the finished
+  source files (`grep -nE '^(def |class )'` against each of the seven
+  `run_anaFit.py` modules, `plot_edm.py`, `python/plotPostFit.py`, and
+  `plot_postfit.cpp`), not re-derived from memory or from earlier,
+  possibly-superseded plan text;
+- every "record the decision" point flagged in Chunks 5, 9, 10, and 11
+  resolved and documented in a dedicated "Decisions recorded during
+  extraction" section: `run_templates.py`'s internal decomposition and
+  the preserved `nPars` quirk (Chunk 5); `parse_minuit_edm_log()`'s
+  `FileNotFoundError`-propagation choice (Chunk 9); `python/plotPostFit.py`'s
+  styling placement, `gStyle`/`gROOT.SetBatch()` relocation, and the
+  `TFile`/`TLegend` lifetime fixes (Chunk 10); `plot_postfit.cpp`'s
+  `exit(1)` placement and the `ResidualPanelKind`/`ResidualPanelInfo`
+  addition beyond the plan's literal signature (Chunk 11);
+- a test-file map from each module/file to its test file(s), including
+  the two new ROOT-macro test files from Chunk 11
+  (`tests/test_read_bumphunter_results.py`,
+  `tests/root_macros/test_read_bumphunter_results.cpp`), each row noting
+  whether real ROOT/CVMFS is needed and, if so, for which specific
+  tests;
+- the unchanged Tier 1/2 gate commands (lightweight full gate, scientific
+  gate), plus the plotting-layer real-ROOT commands this plan introduced,
+  with a paragraph confirming they still cover every extracted module -
+  the scientific gate specifically, since it reruns the real J100/J50
+  launchers, which transitively invoke every one of the four Tier-3
+  refactor targets for real;
+- a "Known limitations" section naming: the two explicit, deliberate
+  scope boundaries Chunk 11 already flagged (`load_postfit_histograms()`
+  (C++) has no dedicated unit test; the `bump_hunter == true` masked
+  path has no automated test at all); the `sys.modules`-stubbing-only
+  testing of `collect_scientific_runtime()`/the `doprefit` branch (never
+  against real ROOT/`PreFit` in a unit test, only end-to-end via the
+  scientific gate); the two preserved pre-existing landmines (the
+  `native_params`/`masked_params` null-pointer risk in
+  `plot_postfit.cpp`, and the `nPars` double-match quirk in
+  `run_templates.py`); and the plan's own out-of-scope boundary (only
+  the four named files were touched).
+
+### Every claim was verified before being written, not just asserted
+
+- The "`run_anaFit.py` imports only from the seven modules, never the
+  reverse" claim: verified via `grep -rn "run_anaFit"
+  python/run_execution.py python/run_manifest.py python/run_provenance.py
+  python/run_masking.py python/run_templates.py python/run_fit.py
+  python/run_cli.py` returning nothing (exit code 1) before writing the
+  claim.
+- The `should_mask()` NaN-handling description: read directly from
+  `python/run_masking.py`'s own source and its inline comment, not
+  reconstructed from memory.
+- The "every real-ROOT/CVMFS test is marked both `requires_root` and
+  `requires_analysis_dependencies`" claim: verified by grepping the
+  decorators immediately preceding every `def test_` in
+  `tests/test_plot_post_fit.py`, `tests/test_plot_postfit_macro.py`, and
+  `tests/test_read_bumphunter_results.py` directly, confirming the three
+  `parse_args()`-only tests correctly have neither marker and all seven
+  real-ROOT tests correctly have both.
+- The "172 passed, 6 deselected" and "27 files unchanged" lightweight-gate
+  numbers, and the "11 passed... 87.29 seconds" plotting-layer-gate
+  number, were both obtained by actually rerunning the gates fresh in
+  this session, immediately before writing them into the document - not
+  copied from an earlier, possibly-stale chunk entry. The scientific-gate
+  number (1 passed, 153.99s) is cited from Chunk 11.B (commit `b026efd`,
+  the most recent commit that could have changed scientific behavior);
+  this chunk makes no production change, so re-running the ~3-minute
+  scientific gate again was judged unnecessary and is not claimed as
+  freshly re-verified in this commit.
+
+### Verification performed
+
+- Manual review: re-read the finished document top to bottom against the
+  actual module and test files it describes (see the spot-checks above),
+  confirming every claim has a citation, per the plan's own acceptance
+  check.
+- `grep -nE '[[:blank:]]+$' doc/TIER3_SYSTEM.md` → no output.
+- `git diff --check` → passed.
+- `python scripts/quality_check.py --mode full` (rerun fresh for this
+  entry's own citations) → 172 passed, 6 deselected; ruff clean; black
+  clean (27 files unchanged); exit code 0.
+- `python -m pytest tests/test_plot_post_fit.py -v
+  tests/test_plot_postfit_macro.py tests/test_read_bumphunter_results.py -v`
+  → 11 passed (9 + 2), 87.29 seconds, exit code 0, run for real against
+  this host's actual CVMFS/LCG scientific runtime.
+- No integration-gate rerun in this commit: no production file changed,
+  so the Chunk 11.B result (`b026efd`, 1 passed, 153.99s) remains the
+  current, accurate citation.
+
+### Compliance review
+
+1. Chunk 12, single commit (no Step A/Step B split applies - no target
+   function exists to characterize, matching Chunk 8's precedent).
+2. Every required-contents item from Chunk 12's own list is present:
+   updated module tables, resolved decision points, test-file map, gate
+   commands with confirmation of continued coverage, and a Known
+   Limitations section.
+3. No production code touched - `git status --short` shows only
+   `doc/TIER3_SYSTEM.md` as new/untracked before this commit.
+4. Every factual claim was checked against the actual repository state
+   in this session before being written, not carried forward from
+   possibly-stale earlier chunk text.
+5. Activity-log entry appended (this content), not a rewrite of any
+   existing section.
+
+### Remaining open chunks
+
+None. All twelve chunks of `doc/TIER3_COMPLETION_PLAN.md` are complete.
+
+## 2026-09-04: Wire the ROOT regression tests into CI and correct the paired-pointer contract (GitHub Copilot review, PR #6)
+
+### Objective
+
+Resolve the two findings from GitHub Copilot's review of PR #6, both
+raised against the Chunk 11/Chunk 12 work:
+
+1. (Medium) `tests/test_plot_postfit_macro.py` and
+   `tests/test_read_bumphunter_results.py` are absent from
+   `scripts/quality_check.py`'s `test_targets`, and the hosted scientific
+   workflow only invokes `tests/test_analysis_workflows_integration.py`.
+   Neither new ROOT regression test therefore ran in any CI job, and both
+   Python wrappers also escaped Ruff/Black.
+2. (Low) `plot_postfit.cpp`'s `load_postfit_histograms()` comment claims
+   all four `TFile *` parameters "may be null", but `native_params`/
+   `masked_params` are dereferenced unconditionally inside their
+   partner's guard, so a caller following the stated contract crashes.
+
+Both were verified against the repository before any change, not taken at
+face value:
+
+- `grep -n "pytest" .github/workflows/scientific-analysis.yml` shows the
+  only three pytest invocations in the hosted job are
+  `tests/test_repo_utils.py -m "requires_analysis_dependencies"`,
+  `tests/test_analysis_workflows_integration.py -k
+  authoritative_setup_provides_scientific_runtime`, and
+  `tests/test_analysis_workflows_integration.py -m "integration and
+  requires_root"`. `.github/workflows/tier1-root-comparison.yml` runs
+  `scripts/quality_check.py`, whose `test_targets` did not list either
+  file. Finding 1 confirmed: neither file ran anywhere in CI.
+- Reading `load_postfit_histograms()` directly confirms
+  `native_params->Get<TH1D>("postfit_params")` sits inside
+  `if (native) { ... }` with no null check of `native_params` itself
+  (same for the masked pair). Finding 2 confirmed as a documentation
+  defect; the code behavior itself is the pre-existing landmine this plan
+  deliberately preserved, and is not changed here.
+
+### What changed
+
+- `scripts/quality_check.py`: added `tests/test_plot_postfit_macro.py`
+  and `tests/test_read_bumphunter_results.py` to `test_targets`, in
+  alphabetical position. This buys Ruff/Black coverage only - every test
+  in both files carries `requires_analysis_dependencies`, so the ordinary
+  gate's pytest phase still deselects all of them, which is exactly the
+  behavior Copilot's comment described as acceptable ("the existing
+  marker can still keep them out of the lightweight pytest phase").
+- `.github/workflows/scientific-analysis.yml`: added a final step, "Run
+  plotting-layer real-ROOT regression gates", which sources
+  `scripts/setup_buildAndFit.sh` (same preamble and same failure
+  annotation as every other scientific step in that job) and then runs
+  `python -m pytest tests/test_plot_post_fit.py
+  tests/test_plot_postfit_macro.py tests/test_read_bumphunter_results.py
+  -m "requires_analysis_dependencies" -v`. The step is placed in this job
+  specifically because it is the only one with CVMFS: it mounts
+  `atlas.cern.ch`/`sft.cern.ch` via the `cvmfs-contrib/github-action-cvmfs`
+  step and verifies the mounts before use.
+  Scope note: Copilot named only the two new wrapper files, but
+  `tests/test_plot_post_fit.py`'s four real-ROOT tests were in exactly
+  the same position - registered for linting, but marker-deselected
+  everywhere and run by no CI job. Fixing only the two named files would
+  have left two thirds of the plotting layer's real-ROOT coverage still
+  unreachable in CI, so all three files are included.
+- `plot_postfit.cpp`: rewrote `load_postfit_histograms()`'s leading
+  comment to state the paired-pointer requirement explicitly
+  (`native_params` must be non-null whenever `native` is; likewise for
+  the masked pair; passing a null params pointer alongside a non-null
+  partner crashes), replacing the previous "any of which may be null"
+  wording. Comment-only: no statement, signature, or behavior changed.
+- `doc/TIER3_SYSTEM.md`: brought in line with the above, and corrected
+  three claims found to be wrong when this branch was reviewed end to
+  end:
+  - the `run_masking.py` row said `should_mask()` was "fixed post-hoc to
+    treat `NaN` as 'not maskable' rather than raising". Both halves are
+    backwards: verified directly that `should_mask(float("nan"), 0.01)`
+    returns `True` (NaN *does* require masking, matching the original
+    coordinator's `if p_value > threshold:` gating), and the pre-fix
+    version returned `False` rather than raising. Rewritten to state the
+    `not (p_value > threshold)` vs `p_value <= threshold` distinction and
+    cite the proving test.
+  - the "Gate commands" closing paragraph claimed the scientific gate
+    exercises all four Tier-3 refactor targets "for real". Verified
+    false: `tests/test_analysis_workflows_integration.py` sets
+    `ANAFIT_SKIP_PLOTS=1`, and `scripts/run_anaFit_J100.sh`/
+    `run_anaFit_J50.sh` gate both plotting invocations on that variable,
+    so the gate covers `run_anaFit.py` and `plot_edm.py` (invoked
+    unconditionally from `build_fit_extract()`) but not
+    `python/plotPostFit.py` or `plot_postfit.cpp`. Rewritten as a
+    three-bullet split stating which gate covers what, and why the
+    plotting layer needed its own CI step.
+  - the test-file map said `tests/test_plot_postfit_macro.py` runs "via
+    `tests/root_macros/`"; it invokes `plot_postfit.cpp` directly.
+  - the `quality_check.py` registration paragraph (which said the two
+    wrapper files are deliberately unregistered) and the plotting-layer
+    gate section were updated to match the new registration and CI step;
+    lightweight-gate numbers refreshed from 172 passed / 6 deselected /
+    27 files to 172 passed / 8 deselected / 29 files.
+
+### Verification performed
+
+- `python scripts/quality_check.py --mode full` → 172 passed, 8
+  deselected, ruff clean, black clean (29 files unchanged), exit code 0.
+  Both newly-registered files are visibly present in the echoed ruff and
+  black command lines.
+- `python -m pytest tests/test_plot_post_fit.py
+  tests/test_plot_postfit_macro.py tests/test_read_bumphunter_results.py
+  -m "requires_analysis_dependencies" --collect-only -q` → 6/11
+  collected, 5 deselected, listing exactly the four `test_plot_post_fit`
+  real-ROOT tests plus the two macro wrappers. This is the precise
+  selection the new CI step will make.
+- `python -m pytest <the same three files> -m
+  "requires_analysis_dependencies"` run for real against this host's
+  CVMFS/LCG runtime → 6 passed, confirming `plot_postfit.cpp` still
+  compiles and behaves identically after the comment rewrite.
+- The workflow file was parsed with `yaml.safe_load` to confirm it is
+  still valid YAML and that the new step is the 15th and last step of
+  `complete-analysis-test-suite`, with its backslash continuations
+  surviving the block scalar intact.
+- `grep -nE '[[:blank:]]+$'` over every changed file and `git diff
+  --check` → both clean.
+- No integration-gate rerun in this commit: no analysis-affecting
+  production code changed (the only `.cpp` change is a comment), so the
+  scientific gate result recorded for Chunk 11.B (`b026efd`, 1 passed,
+  153.99 s) remains the current citation. It was, however, independently
+  re-run at this branch's HEAD during the review that preceded this
+  commit (`pytest -m "not requires_analysis_dependencies" tests/` → 174
+  passed in 153.75 s, which selects it) and still matched the frozen
+  reference.
+
+### Compliance review
+
+1. Only the two verified findings were acted on, plus the documentation
+   claims that the CI change itself made stale and three factual errors
+   found by direct verification against the repository. No unrelated
+   cleanup.
+2. No production behavior changed anywhere: the `.cpp` edit is a comment,
+   `quality_check.py` gains two list entries, and the workflow gains a
+   step. `run_anaFit.py` and the seven extracted modules are untouched.
+3. No new dependency or tool was introduced; the new CI step reuses the
+   existing setup preamble, the existing markers, and the existing
+   pytest invocation style verbatim. The one marker change in this
+   commit (see below) applies an existing, already-defined marker to one
+   more test - it does not define a new one.
+4. Activity-log entry appended (this content), not a rewrite of any
+   existing section - except the "Known follow-up" subsection below,
+   which was rewritten from "not done here" to "done here" before this
+   entry was ever committed, per the append-only rule's own scope (it
+   protects committed history, not a still-uncommitted draft of the
+   entry describing the commit currently being prepared).
+
+### Additional one-line fix folded into this commit
+
+`tests/test_analysis_workflows_integration.py::test_authoritative_j100_j50_workflows_match_frozen_reference`
+carried `integration` and `requires_root` but not
+`requires_analysis_dependencies`, so it was the one real-ROOT test this
+plan's own stated rule ("any test that sources
+`scripts/setup_buildAndFit.sh` carries both markers") did not cover.
+Measured consequence before the fix: `pytest -m "not
+requires_analysis_dependencies" tests/` selected it and ran a real
+154-second fit, and would fail outright on a machine with no CVMFS - the
+same failure mode fixed for the plotting tests in `6745188`. This was
+raised during the same-branch review as a follow-up rather than acted on
+immediately (it touches the scientific gate's own test file and is
+outside both Copilot findings), and is now applied at the user's explicit
+request alongside the two Copilot fixes above, in this same commit.
+
+Added `@pytest.mark.requires_analysis_dependencies` to that one test.
+Verified both CI selectors are unaffected: `pytest
+tests/test_analysis_workflows_integration.py -m "not
+requires_analysis_dependencies" --collect-only` now deselects it (1/3
+collected, was 2/3); `pytest tests/test_analysis_workflows_integration.py
+-m "integration and requires_root" --collect-only` still selects exactly
+it (1/3 collected) - the hosted scientific job's own selector is
+unchanged. `scripts/quality_check.py` never listed this file in
+`test_targets` at all, so it was never affected either way. Reran
+`python scripts/quality_check.py --mode full` after this addition - 172
+passed, 8 deselected, ruff/black clean (29 files unchanged), exit code 0,
+unchanged from the pre-marker run - confirming the fix is inert to every
+existing selector except the one it was meant to change.
+
+## 2026-09-04: Fail-fast validation ordering, a dead parameter, and two documentation-accuracy fixes (same-branch review follow-up)
+
+### Objective
+
+Continue resolving the remaining, non-Copilot items raised during the
+same-branch review that preceded the previous commit (`6855d4a`), at the
+user's explicit request to "fix the rest of the issues found":
+
+1. `run_fit.py`'s `fitresultfile` basename validation ran after the
+   XMLReader subprocess, so a bad `fitresultfile` still paid for a full
+   (expensive) workspace build before failing.
+2. `run_templates.py`'s `_seed_prefit_parameters()` took an `nbkg`
+   parameter that is unconditionally overwritten before any use inside
+   the function - dead parameter-passing, not a behavior difference.
+3. `doc/TIER3_SYSTEM.md`'s Chunk 11 decision paragraph credited the
+   Chunk 11.B byte-identical-PDF verification (41589 bytes) to
+   `tests/test_plot_postfit_macro.py`'s automated test, which
+   deliberately does not assert byte-identical output (its own comment
+   says so, matching `tests/test_plot_post_fit.py`'s documented policy).
+
+Two other items surfaced in the same review - `repository_dirty` added to
+provenance without a `schema_version` bump, and the latent dual-module
+hazard from `pyproject.toml`'s `pythonpath = [".", "python"]` - were
+looked at again and deliberately left alone; see "Considered and not
+changed" below.
+
+### What changed
+
+- `python/run_fit.py`: the `fitresultfile` basename check (added by an
+  earlier Copilot-fix commit, `9f1956a`) moved from between the XMLReader
+  and quickFit calls to the very top of `build_fit_extract()`, before
+  `xmlreader_command` is even constructed. Comment updated from "before
+  quickFit launches" to "before either XMLReader or quickFit launches",
+  with the fail-fast rationale stated explicitly. Pure code motion of a
+  stateless check that only reads `fitresultfile` - no other statement
+  before it in the function depended on anything the check itself
+  produces beyond `fitresult_dir`/`fitresult_name`, both of which move
+  with it.
+- `tests/test_run_fit.py`::`test_build_fit_extract_rejects_fitresultfile_without_fitresult_token`
+  strengthened to match: the comment explaining the ordering change, and
+  the trailing assertion tightened from "quickFit never reached" (`assert
+  "quickFit background or signal fit" not in calls`) to "neither
+  subprocess reached at all" (`assert calls == []`) - the test now
+  actually proves the new fail-fast behavior, not just its weaker,
+  pre-existing guarantee.
+- `python/run_templates.py`: removed `_seed_prefit_parameters()`'s
+  `nbkg` parameter and the corresponding `nbkg=nbkg` keyword argument at
+  its one call site inside `_stage_xml_templates()`. Verified dead by
+  direct reading: the parameter is declared, never read anywhere in the
+  function body, then unconditionally reassigned from the `PreFitter`'s
+  own fitted background count (`nbkg = "%.1E, 0, %.1E" % (_nbkg, 2 *
+  _nbkg)`) before its only use (the `return nbkg` at the end). True of
+  the original single-scope script's identical local-variable
+  reassignment too - this was inert noise introduced by the Chunk 5
+  extraction, not a preserved behavior difference. No test called
+  `_seed_prefit_parameters()` directly with an `nbkg=` keyword (confirmed
+  by grep), so no test needed updating.
+- `doc/TIER3_SYSTEM.md`:
+  - `run_templates.py`'s module-map row and the Chunk 5 decision
+    paragraph updated for the new `_seed_prefit_parameters()` signature,
+    with the removed-parameter history and reasoning recorded inline.
+  - the Chunk 11 decision paragraph rewritten: the automated test is now
+    credited only with what it actually proves (exit `0`, real non-empty
+    `post_fit.pdf`); the byte-identical 41589-byte claim is now
+    attributed to the one-time manual verification recorded in this same
+    file's Chunk 11.B entry, with an explicit note that the automated
+    test does not repeat or enforce it on every run.
+
+### Verification performed
+
+- `python -m pytest tests/test_run_fit.py tests/test_run_templates.py -v`
+  → 11 passed. The strengthened assertion (`calls == []`) passing
+  confirms XMLReader is genuinely never invoked once the check moved
+  ahead of it, not just that quickFit is skipped.
+- `grep -n "_seed_prefit_parameters(" tests/test_run_templates.py` →
+  no direct calls (only through `prepare_run_templates`/
+  `_stage_xml_templates`, both of which keep their own `nbkg` parameter
+  unchanged), confirming the signature change had no test blast radius.
+- `python scripts/quality_check.py --mode full` (rerun fresh after both
+  code changes) → 172 passed, 8 deselected, ruff clean, black clean (29
+  files unchanged), exit code 0 - identical to the pre-fix run, showing
+  neither change touched anything the lightweight gate exercises beyond
+  the two files edited.
+- `grep -nE '[[:blank:]]+$'` over every changed file and `git diff
+  --check` → both clean.
+- Scientific gate rerun (`python -m pytest
+  tests/test_analysis_workflows_integration.py -m "integration and
+  requires_root" -v`) - see result recorded below; `build_fit_extract()`
+  and `prepare_run_templates()` are both on this gate's real,
+  authoritative code path, so a rerun (not just the lightweight gate) is
+  the correct verification for behavior-affecting production changes,
+  unlike the previous, comment-only commit. Result: **1 passed, 2
+  deselected, 172.97 seconds, exit code 0** -
+  `test_authoritative_j100_j50_workflows_match_frozen_reference` still
+  matches the frozen `tests/references/analysis_reference.json` exactly.
+  This run happened to exercise both edits for real, not just in
+  isolation: it was observed mid-run (`ps aux`) actually executing
+  `python/run_anaFit.py --doprefit` against the real J100 fixture, which
+  drives `run_templates.py`'s `doprefit` branch (and therefore
+  `_seed_prefit_parameters()`, whose `nbkg` parameter was just removed)
+  and `run_fit.py`'s `build_fit_extract()` (whose validation check was
+  just reordered ahead of the real XMLReader subprocess call it now
+  precedes) on the authoritative code path, not a stub.
+
+### Considered and not changed
+
+- **`analysis_results.json`'s `repository_dirty` field was added under
+  `schema_version: 2` rather than a new version** (`a83e888`, prior to
+  this session). Checked against repository history before deciding not
+  to act: this repeats an already-established, precedented pattern in
+  this repository (an earlier 2026-08-27 schema change made the
+  identical choice - see `doc/ACTIVITY_LOG.md`'s own schema-version-2
+  entries from that date), and both times shipped with a full
+  regeneration of the two tracked canonical manifests in the same
+  commit, so no stale `schema_version: 2` manifest missing the new field
+  is left committed in this repository. Not a Tier 3 concern (it
+  predates this plan's own commits) and not something this branch's
+  review is the right place to relitigate unilaterally. Documented as a
+  Known Limitation in `doc/TIER3_SYSTEM.md` instead of changed.
+- **The latent dual-module-import hazard from `pyproject.toml`'s
+  `pythonpath = [".", "python"]`** - confirmed directly
+  (`python.run_execution is not run_execution` inside one interpreter)
+  that a module is reachable two ways with two distinct module objects.
+  Not changed: removing either `pythonpath` entry would break real,
+  currently-passing tests that depend on it (the flat-style entry for
+  `tests/test_run_anaFit.py`'s own module-loading helper; the dotted
+  entry for every other test file's `from python.<module> import ...`
+  style), and no test in this repository currently straddles both styles
+  for the same module, so there is no live bug to fix, only a documented
+  risk for future test-writing. Documented as a Known Limitation in
+  `doc/TIER3_SYSTEM.md` instead of changed.
+
+### Compliance review
+
+1. Every change traces to a specific, verified finding from the review
+   that preceded this commit - two real code fixes (fail-fast ordering,
+   dead parameter) and two documentation-accuracy fixes - plus two items
+   deliberately left alone and recorded as Known Limitations rather than
+   silently dropped.
+2. Both code changes are pure refactors with no change to any success
+   path's output: `run_fit.py`'s check is relocated, not altered, and
+   still raises the identical `ValueError` with the identical message;
+   `run_templates.py`'s removed parameter was provably dead (never read
+   before being overwritten), so nothing observable changed. The
+   scientific gate rerun (not just the lightweight gate) confirms this
+   for the real J100 workflow, including the exact `doprefit` and
+   XMLReader code paths touched.
+3. No new dependency, tool, or marker was introduced.
+4. Activity-log entry appended (this content), not a rewrite of any
+   existing section.
