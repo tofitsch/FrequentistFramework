@@ -9317,3 +9317,4451 @@ edit.
 - [x] All required gates ran and passed, output captured above.
 - [x] `git diff --check` passes.
 - [x] Activity-log entry appended (this content).
+
+## Chunk 16b — Fix the 6-of-8 accessors' key-vs-value fallback bug
+
+### Objective
+
+Fix the second dormant bug Chunk 16.A characterized:
+`GetNbins`/`GetNpars`/`GetNdof`/`GetH1Chi2`/`GetH1Postfit`/
+`GetH1Residuals`'s no-`channelname` fallback did `next(iter(self.channel_X))`
+(dict **keys**), unlike `GetChi2`/`GetPval`'s already-correct
+`next(iter(self.channel_X.values()))`. Per
+`doc/TIER3_COMPLETION_PLAN.md` Chunk 16b — optional, run after Chunk 16
+(and Chunk 16a) landed. No new characterization commit was needed:
+Chunk 16.A's own test already pinned this exact wrong-type-return
+behavior; this commit fixes the production code and updates those same
+reused assertions in one commit, per the plan's own text for this
+chunk.
+
+### What changed
+
+- `python/ExtractPostfitFromWS.py`: all 6 affected accessors' fallback
+  changed from `next(iter(self.channel_X))` to
+  `next(iter(self.channel_X.values()))`, matching `GetChi2`/`GetPval`'s
+  pattern exactly. A short comment added above `GetChi2` pointing to
+  this fix for the block below it.
+- `tests/test_extract_postfit_from_ws.py`:
+  `test_extract_and_accessors_characterize_todays_real_and_buggy_behavior`
+  renamed to `test_extract_and_accessors_produce_consistent_real_values`
+  (it no longer characterizes any buggy behavior — both bugs Chunk 16.A
+  found are now fixed, Chunk 16a's in the prior commit, Chunk 16b's in
+  this one). The 6 reused assertions changed from asserting the
+  channel-name string `"Run3TLA"` to asserting the real values
+  (`2519`/`6`/`2513`/histogram bin counts); 6 new assertions added
+  confirming each no-`channelname` call now returns exactly what the
+  same accessor returns when `channelname="Run3TLA"` is supplied
+  explicitly — proving all 8 accessors are now behaviorally consistent,
+  not just that the wrong-type bug is gone.
+
+### Confirm: no scientific behavior changed
+
+Explicitly safe by construction, stated in the plan's own text: the
+only production call site (`run_fit.py:160/162`,
+`pfe.GetPval("Run3TLA_bkgonly_rebinned")`/
+`pfe.GetPval("Run3TLA_rebinned")`) always supplies `channelname`
+explicitly, so this fix cannot change any value that call site — or the
+scientific gate, or any other currently-passing test — observes.
+Confirmed via `git diff python/run_fit.py` returning empty.
+
+### Verification performed
+
+- Under `scripts/setup_buildAndFit.sh`'s ambient interpreter, the full
+  test file (all 5 tests): **5 passed, 29.21s** — no regression to any
+  already-passing test, and the new consistency assertions themselves
+  passed.
+- Full lightweight suite: **195 passed, 20 deselected** — identical
+  count to the post-16a.B baseline (this commit only edits existing
+  test assertions, no test added or removed).
+- Ruff/Black clean on both changed files.
+- `git diff python/run_fit.py`: empty.
+- `git diff --check`: clean.
+
+### Compliance review (Section 8, general fix variant)
+
+- [x] Characterization already existed (Chunk 16.A, commit `9dd0ccd`);
+  this commit's own text states explicitly why no new characterization
+  commit was needed, per the plan's own instruction for this chunk.
+- [x] Fix is minimal: 6 `next(iter(dict))` -> `next(iter(dict.values()))`
+  substitutions, nothing else touched.
+- [x] `run_fit.py`'s call site confirmed unchanged (`git diff` empty),
+  so this fix cannot affect any behavior the scientific gate exercises
+  — stated explicitly, matching the plan's own safety argument for
+  fixing this post-hoc.
+- [x] The updated test proves full 8-accessor consistency (no-arg call
+  == explicit-channelname call), not just "no longer wrong type."
+- [x] All required gates ran and passed, output captured above.
+- [x] `git diff --check` passes.
+- [x] Activity-log entry appended (this content).
+- [x] This entry names both optional Chunks 16a and 16b as now
+  resolved; Chunk 17 (`PreFit.py`) and Chunk 18 (final documentation)
+  remain the only open items in `doc/TIER3_COMPLETION_PLAN.md`.
+
+## Chunk 17.A — Characterization tests for python/PreFit.py
+
+### Objective
+
+Add `PreFitter`'s first-ever direct test, per `doc/TIER3_COMPLETION_PLAN.md`
+Chunk 17, before any restructuring. The only existing test today
+(`tests/test_run_templates.py::_install_fake_prefitter`) fakes the whole
+class to exercise `run_templates.py`'s caller logic instead of
+`PreFitter`'s own real behavior. Zero production code changed in this
+commit.
+
+### What changed
+
+- New `tests/test_pre_fit.py`, following the same real-ROOT
+  subprocess-snippet pattern already established for
+  `ExtractFitParameters.py`/`ExtractPostfitFromWS.py` (`PreFit.py` also
+  does `import ROOT` at module scope, unconditionally — no ROOT-free
+  fragment exists yet).
+- `test_fit_returns_expected_shape_and_is_deterministic_for_real_fixture`:
+  real ROOT `TH1::Fit`, real `seed=42` determinism, against the
+  already-committed `Input/data/dijetTLA/mjj_spectra_J100_dataAll.root`
+  fixture (the same fixture `run_templates.py`'s own `PreFitter` call
+  site passes). `nPars`/`nRetries1`/`nRetries2` deliberately scaled
+  down to `3`/`50`/`3` (vs. production's up-to-`10`/`2000*nPars`/
+  `2*nPars`) purely for test speed — a characterization-strategy choice
+  stated explicitly, not a synthetic substitute (this fixture is real
+  and committed, distinct from Chunk 13's need for a wholly synthetic
+  one). Pins down real, empirically-verified `(bestPars, nbkg)` values
+  and proves two independent `PreFitter` instances built with the same
+  seed reproduce an identical result.
+- `test_fit_raises_indexerror_for_npars_above_seven_with_default_ranges`:
+  characterizes, without fixing, `PreFitter.__init__`'s `parRangeLow`/
+  `parRangeHigh` defaulting to 7-element lists while `nPars` can be
+  requested up to 10 (`run_templates.py` already works around this by
+  building its own longer lists when `nPars > 7` — see
+  `run_templates.py:62-63`). Confirmed empirically that `nPars=8` with
+  the default ranges raises `IndexError` partway through `Fit()`'s
+  first `RandomizeParameters()` call.
+
+### What this commit does NOT do
+
+`python/PreFit.py` itself is untouched; `python/PreFit.py` and
+`tests/test_pre_fit.py` are not yet registered in
+`scripts/quality_check.py` — deferred to Chunk 17's Step B commit once
+the production file's extraction lands, matching this plan's own
+established Step A/Step B split for every prior chunk.
+
+### Verification performed
+
+- `python -m pytest tests/test_pre_fit.py -v` (under
+  `scripts/setup_buildAndFit.sh`'s ambient interpreter) — **2 passed**,
+  run twice to confirm stability (~37-50s per run).
+- Ruff/Black clean on `tests/test_pre_fit.py`.
+- `grep -nE '[[:blank:]]+$'` / `git diff --check`: clean.
+
+### Compliance review (Section 8, Characterization variant)
+
+- [x] Zero production code changed in this commit.
+- [x] Both new tests run against real ROOT and a real, already-committed
+  fixture — no synthetic substitute needed.
+- [x] Today's real `IndexError` fragility for `nPars > 7` with default
+  ranges is characterized, not fixed — matching Chunk 5's own
+  precedent for pinning down a quirk exactly as-is.
+- [x] All required gates ran and passed, output captured above.
+- [x] `git diff --check` passes.
+- [x] Activity-log entry appended (this content).
+- [x] Chunk 17's Step B (extraction, registration) remains the next
+  open item; Chunk 18 (final documentation) remains open after that.
+
+## Chunk 17.B — Extract PreFitter's candidate-building and sampling logic
+
+### Objective
+
+Decompose `PreFitter.Fit()` (130 lines, this file's only large method)
+into two new private helper methods, per `doc/TIER3_COMPLETION_PLAN.md`
+Chunk 17's Section 4.4 target table, with `Fit()` becoming the
+orchestrator, then register `python/PreFit.py` and
+`tests/test_pre_fit.py` in `scripts/quality_check.py`.
+
+### What changed
+
+- `_build_candidate_functions(self)`: builds the 10 linear-mode and 10
+  log-mode candidate `TF1`s (`NParFunction[1..10]`,
+  `LogNParFunction[1..10]`). Moved out as a named block only — every
+  formula/range is byte-for-byte unchanged from today's `Fit()`.
+- `_select_best_parameter_sets(self, fitFunction, integral, score_fn,
+  nRetries1, nRetries2)`: isolates the randomize/score/array-bisect
+  bookkeeping that used to live directly inside `Fit()`'s own sampling
+  loop. Takes a `score_fn` callable (`Fit()` passes a
+  `lambda fn: h.Chisquare(fn)` closure) rather than the data histogram
+  itself, so it has no ROOT calls of its own beyond scoring the
+  candidate function it's handed — this is what makes it independently
+  testable below without a live ROOT histogram, going further than the
+  plan's own "if achievable" bar for this chunk.
+- `Fit()` is now the orchestrator: reads/log-transforms the data
+  histogram, calls the two new helpers, refits the survivors with
+  `TH1::Fit` exactly as before. The two-phase `TStopwatch` is split into
+  two separate instances (one now local to `_select_best_parameter_sets`,
+  one for the refit phase in `Fit()`) instead of one object reused via
+  `.Reset()` — same measurement windows, same stdout print order, no
+  observable change.
+- Lint debt fixed proactively in this same commit (same root cause as
+  Chunk 15's follow-up lint fix — never linted until registration):
+  `import math, array, bisect` / `import sys, argparse` split into
+  one-per-line, sorted; the dead `math` import removed (only
+  `ROOT.TMath` was ever used); `# noqa: E501` added to the
+  pre-existing, unsplittable long `TF1` formula-string literals,
+  matching the existing pattern already used elsewhere in this repo
+  (`python/run_anaFit.py`, `python/ExtractPostfitFromWS.py`).
+
+### Tests added
+
+`tests/test_pre_fit.py` gained 2 new fast, ROOT-free unit tests — this
+repository's first stub-free unit test of any piece of `PreFit.py`'s own
+logic, achievable here (unlike Chunk 15/16's extractor classes) because
+`_select_best_parameter_sets()` takes an already-built candidate and a
+plain scoring callable instead of reaching into a live ROOT histogram
+itself:
+- `test_build_candidate_functions_returns_ten_linear_and_ten_log_candidates`:
+  asserts all 20 candidates exist with the documented
+  `{n}ParFunction`/`Log{n}ParFunction` names and `xMin`/`xMax`, with
+  exact formula-text spot checks on the simplest and most complex
+  candidate in each family (the remaining 16 forms are exercised for
+  real by the existing real-ROOT `Fit()` test, which selects
+  `NParFunction[3]`/`LogNParFunction[3]` via `nPars=3`).
+- `test_select_best_parameter_sets_ranks_and_bounds_output_and_is_deterministic`:
+  against a hand-built fake `TF1` candidate and a plain
+  summed-abs-params scoring callable, asserts the returned list is
+  exactly `nRetries2` long, every entry finite (the initial
+  `(inf, [])` sentinel is provably evicted whenever
+  `nRetries1 >= nRetries2`), sorted ascending by chi2, and that two
+  independent runs with the same `seed=42` reproduce an identical
+  ranked result.
+
+Both new fast tests stub `sys.modules["ROOT"]` with a minimal fake
+module (`_FakeTRandom3` wraps Python's own seeded `random.Random` so
+`RandomizeParameters`' draw sequence stays deterministic;
+`_FakeTStopwatch`/`_FakeTMath`/`_FakeMinimizerOptions`/`_FakeGROOT` are
+inert), the same `sys.modules`-stub convention Chunk 15's
+`GetNsig`/`GetNsigErr` regression tests already established. Step A's 2
+real-ROOT subprocess tests are unchanged and re-verified to still pass
+against this decomposed structure with the exact same pinned values —
+no Test Relocation Rule move was needed since Step A already created
+`tests/test_pre_fit.py` in its final location.
+
+### What this commit does NOT do
+
+The `parRangeLow`/`parRangeHigh` 7-vs-10-element `IndexError` fragility
+is left exactly as Step A characterized it, not fixed — out of this
+chunk's explicitly-listed scope. `run_templates.py`'s call site is
+unchanged.
+
+### Verification performed
+
+- `python -m pytest tests/test_pre_fit.py -v` (under
+  `scripts/setup_buildAndFit.sh`'s ambient interpreter) -> **4 passed**
+  (2 real-ROOT subprocess tests re-verified against the decomposed file
+  with identical pinned values; 2 new fast ROOT-free tests).
+- `python scripts/quality_check.py --mode full` -> **196 passed, 20
+  deselected** (up from 194/18 — the 2 new fast tests now included),
+  Ruff clean, Black clean, exit code 0.
+- `python -m pytest tests/test_analysis_workflows_integration.py -m
+  "integration and requires_root" -v` (via the mandatory pre-commit
+  hook) -> **1 passed, 2 deselected, 182.11s** — no regression.
+- `grep -nE '[[:blank:]]+$'` / `git diff --check`: clean.
+
+### Compliance review (Section 8, Extraction variant)
+
+- [x] Step A's commit (`83d3f7a`) named above; no test relocation was
+  needed.
+- [x] No scientific constant, reference, tolerance, dependency revision,
+  or canonical workflow argument touched.
+- [x] Every newly-introduced function has a dedicated, genuinely new
+  test exercising it directly (not copied from Step A) — and both are
+  ROOT-free, a first for this file's own logic.
+- [x] `run_templates.py` still constructs `PreFitter` the same way —
+  no changes to that file in this commit.
+- [x] The `parRangeLow`/`parRangeHigh` 7-vs-10 `IndexError` fragility
+  remains untouched, exactly as Step A characterized it.
+- [x] `scripts/quality_check.py` registration done in this same commit
+  (guardrail 5), and the newly-registered production file's own lint
+  findings fixed proactively, not left for a later CI failure.
+- [x] All required gates ran and passed, output captured above.
+- [x] `git diff --check` passes.
+- [x] Activity-log entry appended (this content).
+- [x] This entry names Chunk 17 as now resolved; Chunk 18 (final
+  documentation) remains the only open item in
+  `doc/TIER3_COMPLETION_PLAN.md`.
+
+## 2026-09-04: Tier-3 refactoring — Chunk 18: documentation update for the extended scope
+
+### Objective
+
+Revise the three documents Chunks 13-17 touch (`doc/TIER3_COMPLETION_PLAN.md`,
+`doc/TIER3_SYSTEM.md`, `doc/TIER3_EXECUTION_TRACE.md`) so none of them
+still claims a narrower or "finished" scope than the repository actually
+has, per `doc/TIER3_COMPLETION_PLAN.md` Chunk 18's own required-contents
+list. Single commit, documentation only - no target function exists to
+characterize, matching Chunk 12's own precedent for this kind of chunk.
+
+### What changed
+
+- **`doc/TIER3_COMPLETION_PLAN.md`**: Section 0/3's extended-scope
+  language, Section 9's "Chunks 0 through 18" completion definition
+  (including the five files' final decomposition/test/registration
+  bullet and the `FindBHWindow.py`/`createBinning.py` scientific-gate
+  caveat), and Section 10's "nine named" scope-boundary text were all
+  already present from Chunks 13-17's own work - confirmed by re-reading
+  the document in full, not assumed. The one genuinely stale claim found
+  and fixed: Section 4.5's parenthetical "(Chunk 17, not yet executed)"
+  next to `PreFit.py`, now that Chunk 17 has landed.
+- **`doc/TIER3_SYSTEM.md`**: added a new, dated "Chunk 18 update
+  (2026-09-04)" paragraph directly after the existing same-day note that
+  anticipated it (Chunks 13-16 landed / PreFit.py not yet executed) -
+  the original note stays exactly as written, per this document's own
+  established practice of layering dated corrections rather than
+  editing prior text. Added: a matching dated paragraph under "Current
+  status" recording Chunks 13-18's own final gate numbers (196 passed,
+  20 deselected lightweight; 1 passed, 2 deselected, 182.11s scientific)
+  and the `FindBHWindow.py`/`createBinning.py` scientific-gate caveat; a
+  "Chunks 13-18" bullet in "Scope" plus correcting "four files" to
+  "nine" in its out-of-scope paragraph; a new "Module map: hot-path
+  support scripts" table (5 rows, built from the actual `def`/import
+  lines in all five production files, not from memory of the plan's own
+  target tables); 5 new "Test-file map" rows (built from each test
+  file's actual `@pytest.mark` lines); a new "FindBHWindow.py
+  dedicated-interpreter gate" subsection under "Gate commands" (the
+  literal command from `doc/TIER3_COMPLETION_PLAN.md` Section 7); 6 new
+  "Known limitations" entries (`ExtractPostfitFromWS.py`'s two
+  originally-named bugs now fixed plus the third, newly-found one still
+  preserved; `FindBHWindow.py`'s masked-path gate-coverage gap; the
+  `wsfile` double-meaning, cross-checked directly against
+  `python/run_fit.py`'s actual `FitParameterExtractor(wsfile=...)`/
+  `PostfitExtractor(wsfile=...)` call sites; `PreFit.py`'s 7-vs-10
+  fragility; `createBinning.py`'s unchecked `execute()` return code,
+  cross-referenced to `doc/TIER3_EXECUTION_TRACE.md` Section 5; the
+  `numpy`-stub technique, cross-checked directly that this repository's
+  dev venv has no `numpy` installed at all) plus correcting the same
+  stale "four files" bullet; the five new files added to "Authoritative
+  files"; and an "Extended (2026-09-04, Chunks 13-18)" paragraph added to
+  "Completion definition". Also corrected two passages that were not
+  merely historical but actively wrong as of today - the top-level title
+  and intro paragraph's implicit "four files only" framing, and a
+  "which file (`python/PreFit.py`) a real J100/J50 run still calls
+  outside the Tier 3 system" sentence that was flatly false the moment
+  Chunk 17 landed - both rewritten to state the current, extended scope
+  directly rather than left to stand uncorrected beside a dated note.
+- **`doc/TIER3_EXECUTION_TRACE.md`**: removed the sole remaining `(*)`
+  marker from Section 1's call-graph diagram (`python/PreFit.py`'s line)
+  and rewrote the legend paragraph beneath it to state plainly that no
+  file carries the marker any more; extended Section 2's "Also part of
+  the system" paragraph from "Chunks 13-16"/four files to "Chunks 13-17"/
+  all five, adding `PreFit.py`'s own detail (module-level `import ROOT`
+  retained, but its sampling/ranking logic isolated behind a plain
+  scoring-callable interface - this plan's first stub-free, ROOT-free
+  unit test of any piece of one of these five files' own logic); rewrote
+  Section 3 to drop the now-empty `python/PreFit.py` row entirely,
+  leaving only the always-out-of-scope, non-Python
+  `scripts/setup_buildAndFit.sh`, and revised its closing sentence to
+  state the boundary "is no longer something this document is proposing
+  to change; it has changed."
+
+### Verification performed
+
+- Every module-map/test-file-map fact was read directly from the actual
+  production and test files (`grep -n "^def "`/`@pytest.mark` lines
+  across all five files and their five test files) in this session, not
+  carried forward from the plan's own target tables or from memory.
+- `run_fit.py`'s two extractor call sites were grepped directly
+  (`FitParameterExtractor(wsfile=fitresultfile)` at line 168,
+  `PostfitExtractor(..., wsfile=fitresultfile, ...)` at lines 144-153)
+  to confirm the `wsfile` double-meaning claim before writing it.
+- `.venv/bin/python -c "import numpy"` run directly, confirming
+  `ModuleNotFoundError` before writing the numpy-stub Known Limitations
+  entry.
+- `grep -nE '[[:blank:]]+$' doc/TIER3_COMPLETION_PLAN.md doc/TIER3_SYSTEM.md
+  doc/TIER3_EXECUTION_TRACE.md` → clean.
+- `git diff --check` → clean.
+- `git diff --stat` → exactly the three documents this chunk names,
+  zero production or test files touched.
+
+### Compliance review
+
+1. Chunk 18, single commit (documentation only - no Step A/Step B split
+   applies, matching Chunk 12's own precedent).
+2. Every required-contents item from Chunk 18's own list (Section 6) is
+   present in all three documents: extended-scope confirmation, the
+   dated superseding note (not a silent rewrite of the existing "all
+   twelve chunks" status line - that line stays exactly as written), the
+   new module-map table, the 5 new test-file-map rows, the 6 named Known
+   Limitations entries, the new `FindBHWindow.py` gate command, the
+   extended "Authoritative files"/"Completion definition", and Section
+   3's five-files-moved/`(*)`-markers-removed/boundary-sentence-revised
+   changes in `doc/TIER3_EXECUTION_TRACE.md`.
+3. No production or test code touched - `git diff --stat` shows only the
+   three named documents.
+4. Every factual claim was checked against the actual repository state
+   in this session before being written (see "Verification performed"),
+   not carried forward from possibly-stale earlier chunk text.
+5. The activity log's append-only rule was honored inside
+   `doc/TIER3_SYSTEM.md`/`doc/TIER3_EXECUTION_TRACE.md` too, in the same
+   spirit Chunk 18's own instruction asked for: existing dated notes and
+   the original "Current status"/Section 3 tables were superseded by new
+   dated paragraphs and table edits, not silently rewritten in place,
+   except where a passage was actively, factually wrong as of today (not
+   merely an old historical claim) - those two are called out explicitly
+   above rather than left standing uncorrected.
+6. Activity-log entry appended (this content), not a rewrite of any
+   existing section.
+
+### Remaining open chunks
+
+None. All eighteen chunks of `doc/TIER3_COMPLETION_PLAN.md` (0 through
+18, including both optional Chunks 16a and 16b) are complete.
+
+## Rewrite doc/TIER3_SYSTEM.md as pure reference documentation
+
+### Objective
+
+At the user's explicit request: bring `doc/TIER3_SYSTEM.md` closer to
+`doc/TIER1_SYSTEM.md`/`doc/TIER2_SYSTEM.md`'s style - a reference
+document describing the current system, not a chronological record of
+how it was built. Removed every "Chunk N" label, dated "Update
+(2026-09-04): ..." note, GitHub Copilot PR-review citation, and commit
+hash from the document; folded their surviving technical content
+(module maps, design rationale, known limitations, gate commands) into
+plain, present-tense statements about the system as it exists today.
+Nothing in `doc/TIER3_COMPLETION_PLAN.md` or `doc/TIER3_EXECUTION_TRACE.md`
+was touched - both are legitimately historical/planning documents by
+design (the completion plan is "the current Tier 3 backlog, step
+structure, and guardrails"; the execution trace is a dated trace with
+its own defect narrative), and the user's request was scoped to
+`doc/TIER3_SYSTEM.md` specifically.
+
+### What changed
+
+- Collapsed the six-paragraph "Purpose and audience" intro (which had
+  grown three separate dated "Update" notes tracking Chunks 13-16, then
+  17, then 18 landing) into two short paragraphs stating the document's
+  current scope directly.
+- Collapsed "Current status" from two dated paragraphs (Chunks 0-12's
+  original text, then a separate "Chunks 13-18 extended this system"
+  paragraph) into one unified description covering all nine files, with
+  a single current lightweight-gate and scientific-gate result each
+  (no superseded historical numbers kept alongside them).
+- "Scope" no longer distinguishes "the original four" from "the five
+  Chunks 13-18 added" - both in-scope and out-of-scope lists now name
+  all nine files as one set.
+- The `run_masking.py`/`should_mask()` module-map entry no longer
+  attributes the NaN-safe implementation choice to "a GitHub Copilot
+  review finding" - it states the technical reason (float `>`/`<=`
+  disagree only for `NaN`) directly.
+- Renamed "Decisions recorded during extraction" to "Design notes" and
+  moved each file's own rationale next to that file's module-map table
+  (one "Design notes" subsection per module map) instead of one combined
+  section keyed by chunk number - dropped every "Chunk N (...)" heading
+  in favor of naming the file/function directly.
+- "Module map: hot-path support scripts" dropped its "(Chunks 13-17,
+  added 2026-09-04)" heading suffix and each row's "(Chunk 13)"/
+  "(Chunk 14)"/etc. suffix.
+- "Known limitations" dropped every "(Chunk 16a)"/"(Chunk 16b)"/
+  "(Chunk 13)" parenthetical and the "GitHub Copilot review, PR #6"
+  citation; the `ExtractPostfitFromWS.py` entry no longer narrates that
+  two bugs "are now fixed" by two separately-numbered bug-fix chunks -
+  it simply doesn't list them as limitations any more (they're fixed),
+  and states only the one bug that remains: the `hpdf`/`hpdf_bkg` Scale
+  mismatch in `_build_bkgonly_variant`.
+- "Gate commands" dropped the "(Chunk 14, added 2026-09-04)" heading
+  suffix and the "Rerun again after Chunk 17.B's ... unchanged result"
+  historical progression - each gate now states one current result.
+- "Authoritative files" dropped the "(Chunks 13-17, added 2026-09-04)"
+  heading suffix on the hot-path-scripts file list.
+- "Completion definition" merged the original Chunk-12-only paragraph
+  and the separate "Extended (2026-09-04, Chunks 13-18)" paragraph into
+  one, covering all nine files and dropping the commit-hash citations
+  (`b026efd`, `83d3f7a`, `dab5cbd`).
+
+No technical fact was removed in this pass - every module-map row,
+design rationale, known limitation, and gate command from the prior
+version survives, restated without its chunk/date/commit/PR framing.
+
+### Verification performed
+
+- `grep -ni "chunk\|2026-09\|copilot\|PR #\|commit \`" doc/TIER3_SYSTEM.md`
+  -> no matches.
+- `grep -nE '[[:blank:]]+$' doc/TIER3_SYSTEM.md` -> clean.
+- `git diff --check` -> clean.
+- `python scripts/quality_check.py --mode full` (rerun, doc-only change
+  should not affect it) -> 196 passed, 20 deselected, Ruff clean, Black
+  clean (39 files unchanged), exit code 0.
+- `git diff --stat` -> `doc/TIER3_SYSTEM.md` only.
+
+### Remaining open chunks
+
+None. This is a documentation-style revision to an already-complete
+Tier 3, not a new chunk.
+
+## Correct a real scope inaccuracy: python/repo_utils.py is on the J100/J50 hot path
+
+### Objective
+
+At the user's prompting ("why does the scope not include the trace of
+all files within the analysis process"), re-verified whether every file
+Tier 3's own documents claim is "out of scope, untouched" is actually
+untouched by a real J100/J50 run. It is not: `python/repo_utils.py` is
+genuinely imported and exercised on that path
+(`run_provenance.py:8: from repo_utils import find_repo_root`, called by
+`get_repository_root()`, called by `build_analysis_provenance(...)`,
+which every real run invokes), yet `doc/TIER3_COMPLETION_PLAN.md` and
+`doc/TIER3_SYSTEM.md` both listed it as an example of a file "not part
+of the background-only J100/J50 canonical path" - directly contradicted
+by `doc/TIER3_EXECUTION_TRACE.md`'s own trace diagram, which has always
+shown `get_repository_root() -> repo_utils.find_repo_root()`.
+
+Checked every remaining candidate before concluding this was the only
+gap: grepped every `import`/`from` line across all 15 already-recognized
+hot-path Python files (excluding stdlib/ROOT/numpy/matplotlib/uproot/
+pyBumpHunter) - `repo_utils` was the only first-party module surfacing
+that wasn't already accounted for. Separately confirmed
+`python/analysis_reference.py` (only imported by tests and
+`scripts/quality_check.py`, never by production code),
+`python/run_injections_anaFit.py` (a distinct entry point, not invoked
+by `scripts/run_anaFit_J100.sh`/`run_anaFit_J50.sh`), and
+`scripts/compare_root_outputs.py` (only imported by
+`tests/test_compare_root_outputs.py`) are genuinely untouched by the
+J100/J50 workflow - their "out of scope" listing is accurate and
+unchanged.
+
+No new decomposition was needed for `repo_utils.py`: it was already
+brought to Tier 3's own standard (four small, single-purpose,
+individually-tested functions, registered in `scripts/quality_check.py`)
+by `doc/TIER1_SYSTEM.md`'s own earlier work, before this plan existed.
+This is a documentation-accuracy fix only.
+
+### What changed
+
+- `doc/TIER3_COMPLETION_PLAN.md` Section 3's out-of-scope bullet: removed
+  `python/repo_utils.py` from the list of examples of untouched files
+  (it now names only the two that genuinely are:
+  `python/analysis_reference.py`, `python/run_injections_anaFit.py`),
+  and added an explicit note explaining why `repo_utils.py` is the one
+  exception - on the hot path, but requiring no work because Tier 1/2
+  already met the bar.
+- `doc/TIER3_SYSTEM.md`: "Scope" section's out-of-scope paragraph gets
+  the same correction, plus a new paragraph naming `repo_utils.py` as a
+  tenth file on the workflow. The "This document's scope is exactly the
+  nine files named above" Known Limitations bullet now says "plus
+  `python/repo_utils.py`'s pre-existing standard." "Authoritative files"
+  gains a new "Also on the same hot path, owned by
+  `doc/TIER1_SYSTEM.md`" line listing `python/repo_utils.py`.
+- `doc/TIER3_EXECUTION_TRACE.md`: Section 1's diagram gains a
+  `<-- python/repo_utils.py` annotation on the
+  `get_repository_root() -> repo_utils.find_repo_root()` line, matching
+  every other file's annotation style. Section 2 gains a paragraph
+  documenting this finding directly, including the correction to
+  `doc/TIER3_COMPLETION_PLAN.md`'s prior text.
+
+### Verification performed
+
+- `grep -rln "repo_utils" --include=*.py .` and manual read of
+  `python/run_provenance.py:8` confirm the real import.
+- `grep -nE "^\s*(import|from)\s+" <every hot-path Python file>` filtered
+  against stdlib/ROOT/numpy/matplotlib/uproot/pyBumpHunter/datetime -
+  `repo_utils` was the only first-party module found unaccounted for.
+- `grep -rln "analysis_reference\|compare_root_outputs" --include=*.py .`
+  confirm both are only imported by tests/`quality_check.py`, never by
+  production code.
+- `grep -rln "run_injections_anaFit"` against
+  `scripts/run_anaFit_J100.sh`/`run_anaFit_J50.sh` returns nothing.
+- Read `python/repo_utils.py` in full: 4 small functions, already
+  docstringed, matching Tier 3's own decomposition bar.
+- `grep -nE '[[:blank:]]+$'` across all three documents: clean.
+- `git diff --check`: clean.
+- `python scripts/quality_check.py --mode full` (doc-only change,
+  re-verified unaffected): 196 passed, 20 deselected, Ruff clean, Black
+  clean (39 files unchanged), exit code 0.
+- `git diff --stat`: exactly the three named documents.
+
+### Remaining open chunks
+
+None. This is a documentation-accuracy correction to an already-complete
+Tier 3, not a new chunk - and it required no new decomposition, test, or
+registration work, since `python/repo_utils.py` already met Tier 3's own
+standard before this plan began.
+
+## Fill in python/repo_utils.py's missing Test-file map row
+
+### Objective
+
+At the user's prompting ("are all of these files included in tier3
+system documentation"), systematically cross-checked every one of the
+17 files on the J100/J50 hot path (the nine Tier-3-decomposed files plus
+the eight already-decomposed coordinator/plotting files, plus
+`python/repo_utils.py`) against `doc/TIER3_SYSTEM.md`'s three canonical
+lookup tables/lists: "Module map" (x3), "Test-file map", and
+"Authoritative files". `python/repo_utils.py` was present in "Scope",
+"Known limitations", and "Authoritative files", but missing from the
+"Test-file map" table - the concrete table a reader would actually
+consult to answer "which test file exercises this."
+
+### What changed
+
+- `doc/TIER3_SYSTEM.md`'s "Test-file map" gains a `python/repo_utils.py`
+  row (`tests/test_repo_utils.py`), read directly from the test file's
+  own `@pytest.mark` lines rather than assumed: `find_repo_root()`/
+  `build_repo_snapshot()`/`write_repo_snapshot()`/`read_repo_snapshot()`'s
+  own tests need no ROOT or other heavy dependency, but two other,
+  unrelated tests in that same file (external Git-submodule-revision
+  checks - Tier 1/2's own installation policy, nothing to do with
+  `repo_utils.py`'s own functions) are separately marked
+  `requires_analysis_dependencies` - stated explicitly so the row isn't
+  a flat, misleading "No."
+- "Scope"'s `repo_utils.py` paragraph now names all four of its
+  functions explicitly (matching every other file's level of detail in
+  this document) and states which one is actually on the hot path.
+
+### Verification performed
+
+- `grep -c "<filename>" doc/TIER3_SYSTEM.md` for all 17 hot-path files:
+  every one has at least one mention.
+- `sed -n '/Test-file map/,/Gate commands/p' doc/TIER3_SYSTEM.md | grep -c "^| \`"`
+  -> 18 rows (17 files + `plot_postfit.cpp`'s `read_bumphunter_results()`
+  extra row) after this fix - was 17 before.
+- `sed -n '/Authoritative files/,/Change control/p' doc/TIER3_SYSTEM.md`
+  cross-checked line by line against the 17-file list: all present.
+- `grep -n "@pytest.mark" tests/test_repo_utils.py`: confirmed exactly 2
+  of 14 test functions are `requires_analysis_dependencies`, and read
+  both to confirm they check external submodule revisions, not
+  `repo_utils.py`'s own functions.
+- `grep -nE '[[:blank:]]+$' doc/TIER3_SYSTEM.md`: clean.
+- `git diff --check`: clean.
+- `python scripts/quality_check.py --mode full`: 196 passed, 20
+  deselected, Ruff clean, Black clean (39 files unchanged), exit 0.
+- `git diff --stat`: `doc/TIER3_SYSTEM.md` only.
+
+### Remaining open chunks
+
+None. This is a documentation-completeness correction to an
+already-complete Tier 3, not a new chunk.
+
+## Fix a real CI gap: tests/test_pre_fit.py's real-ROOT tests never ran in any job
+
+### Objective
+
+While investigating whether a single command exists to run the analysis
+and all test files, checked which CI workflow step actually runs each
+`requires_analysis_dependencies`-marked test file. Found that
+`tests/test_pre_fit.py` (added by Chunk 17) was never added to
+`.github/workflows/scientific-analysis.yml`'s "Run plotting-layer
+real-ROOT regression gates" step - the only CI step that runs anything
+the lightweight gate deselects. Its two real-ROOT tests
+(`test_fit_returns_expected_shape_and_is_deterministic_for_real_fixture`,
+`test_fit_raises_indexerror_for_npars_above_seven_with_default_ranges`)
+have therefore never run in any CI job at all, on any push to this
+branch since Chunk 17 landed - the exact same class of gap this
+workflow step's own comment already records being found and fixed twice
+before, for other files, now repeated a third time.
+
+Also found, while fixing this, that `doc/TIER3_SYSTEM.md`'s own
+"Plotting-layer real-ROOT gate" section had drifted out of sync with the
+real workflow file even before this: it still documented the original
+3-file command from Chunk 11/12, never updated when Chunks 13-16 grew
+the real workflow step to 7 files.
+
+### What changed
+
+- `.github/workflows/scientific-analysis.yml`: added `tests/test_pre_fit.py`
+  to the "Run plotting-layer real-ROOT regression gates" step's pytest
+  file list. Rewrote the step's own comment to stop naming specific past
+  chunk numbers for the file list (which is exactly what went stale) and
+  instead state the actual rule going forward: every test file with a
+  `requires_analysis_dependencies` test must be added to this list in
+  the same commit that introduces it.
+- `doc/TIER3_SYSTEM.md`'s "Plotting-layer real-ROOT gate" section:
+  updated the documented command to the real, current 8-file list (was
+  3), and updated the "6 tests"/"11 passed" claims to the real, freshly
+  measured 18 selected / 46 total.
+
+### Verification performed
+
+- `grep -rn "test_pre_fit" .github/workflows/*.yml` before this fix:
+  no matches - confirmed the gap directly, not assumed from the
+  workflow's own comment.
+- `grep -rl "requires_analysis_dependencies" tests/*.py`: 10 files
+  carry the marker; cross-checked each against the workflow step's file
+  list (`test_analysis_workflows_integration.py`/`test_repo_utils.py`
+  are covered by their own separate steps) - `test_pre_fit.py` was the
+  only one missing.
+- Ran the exact fixed command for real, under
+  `scripts/setup_buildAndFit.sh`'s sourced interpreter:
+  `python -m pytest tests/test_plot_post_fit.py
+  tests/test_plot_postfit_macro.py tests/test_read_bumphunter_results.py
+  tests/test_create_binning.py tests/test_extract_fit_parameters.py
+  tests/test_extract_postfit_from_ws.py tests/test_find_bh_window.py
+  tests/test_pre_fit.py -m "requires_analysis_dependencies" -v` ->
+  **18 passed, 28 deselected, 69.98s**, including both of
+  `test_pre_fit.py`'s real-ROOT tests for the first time in this CI
+  step's history.
+- Reran the same 8 files unfiltered (no `-m`) to confirm the
+  "equivalent on a CVMFS host" claim: **46 passed, 44.30s**.
+- `grep -nE '[[:blank:]]+$'` on both changed files: clean.
+- `git diff --check`: clean.
+- `python scripts/quality_check.py --mode full`: 196 passed, 20
+  deselected, Ruff clean, Black clean (39 files unchanged), exit 0
+  (unaffected - this fix touches no lightweight-gate target).
+- `git diff --stat`: `.github/workflows/scientific-analysis.yml` and
+  `doc/TIER3_SYSTEM.md` only.
+
+### Remaining open chunks
+
+None. This is a CI-coverage bug fix plus a documentation-sync
+correction to an already-complete Tier 3, not a new chunk.
+
+## Add scripts/run_all_gates.sh: a single command for every gate
+
+### Objective
+
+At the user's request, create a single command that runs the analysis
+and every test file. No such command existed - the checks were split
+across four separate invocations (the lightweight gate, the scientific
+gate, the plotting-layer/hot-path real-ROOT gate, and the
+FindBHWindow.py dedicated-interpreter gate), plus the prepared-
+dependency checks inside `tests/test_repo_utils.py`.
+
+### What changed
+
+- New `scripts/run_all_gates.sh` (executable), running in order: (1) the
+  lightweight quality gate; (2) the real J100/J50 scientific analysis,
+  end to end; (3) the plotting-layer and hot-path-support real-ROOT
+  regression gate (the 8-file list `test_pre_fit.py` was just added to);
+  (4) the prepared external-dependency checkout checks; (5) the
+  FindBHWindow.py dedicated-interpreter gate, run against the committed
+  J100 `PostFit_anaFit_sixPar_bkgOnly.root` fixture inside a throwaway
+  temp directory (avoids leaving `bump.png`/`BH_statistics.png` in the
+  repo root - confirmed these files are written to the working directory
+  by direct observation before adding the temp-dir wrapper). Prints a
+  PASSED/FAILED line per gate, runs every gate regardless of earlier
+  failures, and exits non-zero if any failed. Unlike `.githooks/pre-commit`
+  (which skips the ROOT-dependent half with a warning when CVMFS isn't
+  mounted, so a commit is never blocked on a machine that legitimately
+  lacks it), this script fails loudly if the ROOT runtime isn't
+  available, since its whole purpose is to run every gate.
+- Two new tests in `tests/test_repo_utils.py`:
+  `test_run_all_gates_script_covers_every_requires_analysis_dependencies_test_file`
+  and
+  `test_ci_scientific_workflow_covers_every_requires_analysis_dependencies_test_file`.
+  Both grep every `tests/test_*.py` file for the
+  `requires_analysis_dependencies` marker and assert the new script (and
+  the CI workflow file, respectively) reference every one of them - the
+  same class of gap just fixed for `tests/test_pre_fit.py`, now
+  regression-tested going forward instead of relying on a human noticing
+  a third time. Confirmed the CI-workflow test actually catches a
+  regression: temporarily removed `test_pre_fit.py` from
+  `.github/workflows/scientific-analysis.yml` and reran the test - it
+  failed with the exact missing filename named in the assertion message,
+  then restored the file with `git checkout --`.
+- `README.md` gains a "Run every gate in one command" subsection
+  pointing at the new script. `doc/TIER3_SYSTEM.md`'s "Gate commands"
+  section gains a matching entry at the top, and its lightweight-gate
+  test count is updated from 196 to 198 (the two new tests above).
+
+### Verification performed
+
+- `bash -n scripts/run_all_gates.sh`: syntax OK.
+- `shellcheck scripts/run_all_gates.sh`: no actual warnings (two
+  info-level SC2016 hits on intentionally-deferred variable expansion
+  inside nested `bash -lc`/`trap` strings, not bugs).
+- Ran the full script for real, twice: first run caught a real bug (a
+  stray `set -e` before `source scripts/setup_buildAndFit.sh` in the
+  FindBHWindow step broke sourcing, since that script contains commands
+  that legitimately return non-zero mid-script - the same reason every
+  other gate in this script and `.githooks/pre-commit` avoid `set -e`
+  around that line). Fixed, then reran end to end: all 5 gates PASSED,
+  exit code 0, ~2m45s, `git status --short` clean afterward (no stray
+  plot files).
+- `python -m pytest tests/test_repo_utils.py -v`: 16 passed, including
+  both new tests.
+- `python scripts/quality_check.py --mode full`: 198 passed (up from
+  196), 20 deselected, Ruff clean, Black clean (39 files unchanged),
+  exit code 0.
+- `grep -nE '[[:blank:]]+$'` across all changed files: clean.
+- `git diff --check`: clean.
+- `git diff --stat`: `README.md`, `doc/TIER3_SYSTEM.md`,
+  `tests/test_repo_utils.py`, plus the new `scripts/run_all_gates.sh`.
+
+### Remaining open chunks
+
+None. This is new convenience tooling plus its own regression tests,
+added to an already-complete Tier 3, not a new chunk.
+
+---
+
+## 2026-09-07 — Refresh Tier 1/2 documentation and fold in the new gate-completeness tests
+
+### Objective
+The user asked for a correctness pass over `doc/TIER1_SYSTEM.md`,
+`doc/TIER2_SYSTEM.md`, and `doc/TIER1_ENVIRONMENT_PROVENANCE.md`, and
+for the two new gate-completeness tests (added alongside
+`scripts/run_all_gates.sh`) to be reflected there.
+
+### What changed
+
+- All three documents carried the same stale "Latest verified result"
+  snapshot from early Tier-1/2 baselining: `105 collected`, `103
+  passed`, and either `2 prepared-dependency tests deselected` or `11
+  deselected` for the prepared-dependency gate alone, plus stale
+  per-gate timings (`16.39 seconds` for runtime readiness, `152.86
+  seconds` for the scientific characterization gate). Re-ran every gate
+  for real and replaced these with current numbers: lightweight gate
+  `218 collected, 198 passed, 20 deselected`; prepared-dependency gate
+  (`tests/test_repo_utils.py -m requires_analysis_dependencies`) `2
+  passed, 14 deselected`; scientific runtime readiness `2.62 seconds`;
+  authoritative J100/J50 characterization gate `73.22 seconds`. ROOT
+  6.26/08, Python 3.9.12, and the LCG_102a/x86_64-centos9-gcc11-opt
+  platform were independently reverified as still accurate and left
+  unchanged.
+- `doc/TIER1_SYSTEM.md`'s "Scope boundary" sentence still read as if
+  Tier-3 refactoring had not yet started ("Tier-3 refactoring may
+  proceed after this installer build-mode change set is..."), despite
+  Tier 3 having been under way and mostly complete for many chunks.
+  Reworded to state that Tier-3 refactoring proceeds under the Tier-1
+  safety net and must keep this document's gates passing, with a
+  pointer to `doc/TIER3_SYSTEM.md`.
+- Added a new "Run every gate in one command" entry (`bash
+  scripts/run_all_gates.sh`) to `doc/TIER1_SYSTEM.md`'s Gate commands,
+  `doc/TIER2_SYSTEM.md`'s Gate operation, and
+  `doc/TIER1_ENVIRONMENT_PROVENANCE.md`'s Verification commands - the
+  script composes exactly these tiers' own gates (plus Tier 3's), but
+  none of the three documents mentioned it even though README.md already
+  points to them as the "complete operating and validation details" for
+  it.
+- `doc/TIER1_SYSTEM.md`'s new gate entry and
+  `doc/TIER2_SYSTEM.md`'s "Current lightweight coverage" list now
+  explicitly name the two new tests in `tests/test_repo_utils.py`
+  (`test_run_all_gates_script_covers_every_requires_analysis_dependencies_test_file`,
+  `test_ci_scientific_workflow_covers_every_requires_analysis_dependencies_test_file`)
+  and what they guard against, rather than leaving them covered only
+  implicitly by the generic "tests/test_repo_utils.py" file-level
+  listing both documents already carried.
+
+### Verification performed
+
+- `python scripts/quality_check.py --mode full`: 198 passed, 20
+  deselected, Ruff clean, Black clean, exit code 0 (before and after the
+  edits - these are documentation-only changes).
+- Re-ran, for real, on this machine (CVMFS/ROOT available):
+  `python -m pytest tests/test_repo_utils.py -m
+  "requires_analysis_dependencies" -v` (2 passed, 14 deselected);
+  `python -m pytest tests/test_analysis_workflows_integration.py -k
+  authoritative_setup_provides_scientific_runtime -v` (1 passed, 2
+  deselected, 2.62s); `python -m pytest
+  tests/test_analysis_workflows_integration.py -m "integration and
+  requires_root" -v` (1 passed, 2 deselected, 73.22s); `root-config
+  --version` and `python -c "import ROOT; print(ROOT.gROOT.GetVersion())"`
+  (both `6.26/08`).
+- Confirmed every file named in Tier-1's "Authoritative files" list and
+  Tier-2's "Approved lightweight tests"/"Approved source targets" lists
+  still exists at its stated path.
+- `grep -nE '[[:blank:]]+$' doc/TIER1_SYSTEM.md doc/TIER2_SYSTEM.md
+  doc/TIER1_ENVIRONMENT_PROVENANCE.md`: clean.
+- `git diff --check`: clean.
+- `git diff --stat`: `doc/TIER1_SYSTEM.md`, `doc/TIER2_SYSTEM.md`,
+  `doc/TIER1_ENVIRONMENT_PROVENANCE.md`.
+
+### Remaining open chunks
+
+None. This is a documentation-accuracy pass over already-complete Tier
+1/2 systems, not a new chunk.
+
+---
+
+## 2026-09-07 — Address GitHub Copilot PR review findings (Chunk 17, run_all_gates.sh)
+
+### Objective
+Respond to a Copilot automated review on the open PR covering Chunk 17
+(`python/PreFit.py`) and the `scripts/run_all_gates.sh` gate-coverage
+work. Verify each finding directly against the real files before
+changing anything, rather than trusting the review's diff at face
+value.
+
+### What changed
+
+- **Real gap, confirmed and fixed**: `scripts/run_all_gates.sh`'s Gate
+  2 (`-m "integration and requires_root"` against
+  `tests/test_analysis_workflows_integration.py`) selects only
+  `test_authoritative_j100_j50_workflows_match_frozen_reference`. It
+  never ran `test_authoritative_setup_provides_scientific_runtime` (the
+  scientific runtime-readiness gate documented in
+  `doc/TIER1_SYSTEM.md`) - sourcing `setup_buildAndFit.sh` is not a
+  substitute, since that test also checks required fixtures and
+  executable artifacts. Added it back as its own numbered gate; the
+  script is now 6 gates, not 5 (renumbered throughout, header comment
+  and `doc/TIER1_SYSTEM.md`'s "Run every gate in one command" entry
+  updated from "three gates above" to "four gates above" accordingly).
+- **Real gap, confirmed and fixed**: both new
+  `tests/test_repo_utils.py` gate-coverage tests
+  (`test_run_all_gates_script_covers_every_...`,
+  `test_ci_scientific_workflow_covers_every_...`) searched raw
+  script/workflow text for `"tests/<filename>"`, so a commented-out
+  reference would still satisfy them, and both blanket-exempted
+  `tests/test_analysis_workflows_integration.py` from the check
+  entirely - which is exactly how the Gate-2 omission above went
+  undetected by the very tests meant to catch this class of bug.
+  Replaced the blanket exemption with an explicit per-test assertion
+  (`_INTEGRATION_TEST_SELECTORS`) that each of that file's two
+  `requires_analysis_dependencies` tests has its own dedicated selector
+  present in the gate text, and added `_strip_full_line_comments()` so
+  a commented-out line can never satisfy either check. Reproduced the
+  original Gate-2 bug (commented out the runtime-readiness invocation)
+  and confirmed the fixed test now fails with the exact missing test
+  name, then restored; same proof for a commented-out
+  `tests/test_pre_fit.py` line in the CI workflow file.
+- **Real, order-dependent test bug, confirmed and fixed**:
+  `tests/test_pre_fit.py`'s `_make_stubbed_prefitter()` only patched
+  `sys.modules["ROOT"]`, not `python.PreFit`'s own already-imported
+  `ROOT` global - since that module stays cached in `sys.modules`
+  across tests, a `from python import PreFit` after the first call
+  does not re-run `import ROOT`, so a later call's fresh fake was
+  silently ignored in favor of whichever fake the *first* call in the
+  process happened to install. Reproduced by running
+  `test_select_best_parameter_sets_...` before
+  `test_build_candidate_functions_...` via explicit node IDs: failed
+  with `AttributeError: module 'ROOT' has no attribute 'TF1'`. Fixed by
+  adding `monkeypatch.setattr(pre_fit, "ROOT", fake_root_module)`
+  immediately after import; reran both orders (declared and reversed) -
+  both now pass.
+- **Documentation-accuracy fixes** (no behavior change): "stub-free"
+  was inaccurate everywhere it appeared for `tests/test_pre_fit.py`'s
+  two new unit tests - they install a fully-stubbed `ROOT` module, and
+  `_select_best_parameter_sets()` itself still calls
+  `ROOT.TStopwatch`/`ROOT.TMath.Exp`/`ROOT.TMath.Log`, so "ROOT-free"
+  was never accurate; "histogram-independent, ROOT-stubbed" is.
+  Corrected the wording in `python/PreFit.py`'s own docstring,
+  `tests/test_pre_fit.py`'s comment header, `doc/TIER3_SYSTEM.md`'s
+  `PreFit.py` module-map row, `doc/TIER3_EXECUTION_TRACE.md`'s Section
+  2 paragraph, and `doc/TIER3_COMPLETION_PLAN.md`'s Chunk 17 Step B
+  text. `doc/ACTIVITY_LOG.md`'s own earlier "stub-free" entries
+  (Chunk 17.B, and the Chunk 13-18 planning entry) are left unedited,
+  per this file's own append-only rule - this entry is the correction
+  of record for both.
+- **Documentation-accuracy fix**: `tests/test_pre_fit.py`'s
+  `_build_candidate_functions()` test comment claimed the real-ROOT
+  test above exercises "the remaining 16 forms ... for real, end to
+  end (nPars=3 selects NParFunction[3]/LogNParFunction[3])". Checked
+  `Fit()` directly: with `fitLog=True` it always selects
+  `LogNParFunction[nPars]`, never `NParFunction[nPars]`, in the same
+  run - so exactly one of the twenty candidate forms (`Log3ParFunction`)
+  is exercised end to end by that test, not sixteen. Corrected the
+  comment to state this precisely.
+
+### Verification performed
+
+- `python scripts/quality_check.py --mode full`: 198 passed, 20
+  deselected, Ruff clean, Black clean, exit code 0.
+- `bash scripts/run_all_gates.sh`: all 6 gates PASSED, including the
+  newly-added scientific runtime-readiness gate; `git status --short`
+  clean afterward.
+- Reproduced and confirmed each of the three real bugs above fails
+  before its fix and passes after, as detailed per bullet.
+- `bash -n scripts/run_all_gates.sh`: syntax OK.
+- `grep -nE '[[:blank:]]+$'` across all changed files: clean.
+- `git diff --check`: clean.
+- `git diff --stat`: `scripts/run_all_gates.sh`, `python/PreFit.py`,
+  `tests/test_pre_fit.py`, `tests/test_repo_utils.py`,
+  `doc/TIER1_SYSTEM.md`, `doc/TIER3_SYSTEM.md`,
+  `doc/TIER3_EXECUTION_TRACE.md`, `doc/TIER3_COMPLETION_PLAN.md`.
+
+### Remaining open chunks
+
+None. This is a review-response pass over already-complete work, not a
+new chunk.
+
+---
+
+## 2026-09-07 — Address a second round of GitHub Copilot PR review findings (Chunk 17)
+
+### Objective
+Respond to a further Copilot review round on the same open PR, which
+flagged a real behavior-preservation regression in the refactored
+`Fit()` plus a few leftover "ROOT-free" wording inaccuracies missed by
+the previous review-response commit.
+
+### What changed
+
+- **Real bug, confirmed by diffing against the pre-Chunk-17 source
+  (`git show dab5cbd^:python/PreFit.py`) and fixed**: the original
+  `Fit()` reused one `TStopwatch` for both phases, restarting it
+  (`w.Reset(); w.Start()`) immediately after the sampling phase's own
+  `w.Print()` - i.e. *before* the "Starting fit of %d best samples"
+  banner and the `bestChi2`/`bestPars` buffer setup. After Chunk 17
+  moved the sampling phase into `_select_best_parameter_sets()` (which
+  now owns its own stopwatch), the fitting-phase stopwatch in `Fit()`
+  was constructed and started *after* that banner and buffer setup
+  instead - a small but real, observable timing-output regression
+  (`w.Print()`'s reported interval no longer covers the same span).
+  Moved the new stopwatch's construction/`Start()` back to immediately
+  after `_select_best_parameter_sets()` returns, matching the original
+  interval exactly. Verified with the real-ROOT fixture test that fit
+  results (`bestPars`, `nbkg`) are unaffected, as expected (timing
+  never entered any assertion).
+- **Documentation-accuracy fixes** (no behavior change), all leftover
+  from the previous review-response commit's "stub-free" -> "ROOT-stubbed"
+  pass: `tests/test_pre_fit.py`'s two remaining "ROOT-free" mentions
+  (a cross-reference comment and a section-heading comment for the same
+  two tests already described accurately a few lines below) renamed to
+  "ROOT-stubbed" for internal consistency. `doc/TIER3_SYSTEM.md`'s
+  summary sentence claiming all five hot-path-support files "follow the
+  same two-tier approach... a sys.modules-stubbed fast tier plus a
+  real... tier" was checked against its own Test-file map and found
+  false: `ExtractPostfitFromWS.py` has no fast tier at all (every one
+  of its tests is real-ROOT, confirmed - none of its 5
+  `requires_analysis_dependencies`-marked tests print in the
+  lightweight gate's dot output), and `createBinning.py`/
+  `FindBHWindow.py`'s fast fragments are reached by deferred imports
+  (ROOT-free / numpy-only respectively), not by `sys.modules["ROOT"]`
+  stubbing. Rewrote the sentence to describe each file's actual shape
+  instead of asserting a uniform pattern.
+
+### Verification performed
+
+- `python scripts/quality_check.py --mode full`: 198 passed, 20
+  deselected, Ruff clean, Black clean, exit code 0.
+- Real-ROOT: `python -m pytest tests/test_pre_fit.py -m
+  "requires_analysis_dependencies" -v` (2 passed) - confirms the
+  stopwatch reorder does not change `bestPars`/`nbkg`.
+- Read `tests/test_extract_fit_parameters.py` directly to confirm its
+  fast tier does use a `sys.modules["ROOT"]` stub (2 tests, the
+  `GetNsig`/`GetNsigErr` falsiness-quirk regression), and confirmed via
+  the lightweight gate's own dot-per-file output that
+  `test_extract_postfit_from_ws.py` contributes zero dots (all 5 of its
+  tests are `requires_analysis_dependencies`-marked, none fast) before
+  rewriting the summary sentence.
+- `grep -nE '[[:blank:]]+$'` across all changed files: clean.
+- `git diff --check`: clean.
+- `git diff --stat`: `python/PreFit.py`, `tests/test_pre_fit.py`,
+  `doc/TIER3_SYSTEM.md`.
+
+### Remaining open chunks
+
+None. This is a second review-response pass over already-complete
+work, not a new chunk.
+
+---
+
+## 2026-09-07 — Self-audit of the review-response commits: four accuracy defects found and fixed
+
+### Objective
+The user asked for a critical evaluation of the three preceding
+2026-09-07 commits (`12a17e1`, `fde3006`, `b4b9d36`) - whether the
+documentation actually matches the changes made, and whether those
+changes were effective - rather than taking the commits' own
+verification claims at face value. Effectiveness was confirmed by
+re-running everything; four documentation/behaviour defects were found
+in the process, three of them introduced or left behind by the very
+commits meant to fix accuracy. This entry records both halves.
+
+### Effectiveness re-verified (independently, not from prior claims)
+
+- `bash scripts/run_all_gates.sh`: exit code 0, all six gates PASSED -
+  lightweight (218 collected, 198 passed, 20 deselected, Ruff/Black
+  clean); scientific runtime-readiness (1 passed, 2.13s); J100/J50
+  scientific gate (1 passed, 71.34s); plotting-layer/hot-path real-ROOT
+  gate (18 passed, 28 deselected, 46.70s); prepared-dependency gate (2
+  passed, 14 deselected); `FindBHWindow.py` dedicated-interpreter gate
+  (global p-value 0.0334, mask window 595,691). `git status --short`
+  clean afterward. The runtime-readiness gate that `fde3006` added
+  therefore does run, which was the point of that fix.
+- The `tests/test_pre_fit.py` stub-order fix works: running
+  `test_select_best_parameter_sets_ranks_and_bounds_output_and_is_deterministic`
+  before `test_build_candidate_functions_returns_ten_linear_and_ten_log_candidates`
+  by explicit node ID (the order that failed before the fix) now gives
+  2 passed.
+- The documented gate figures are exact, and the deselection count
+  reconciles: 22 `requires_analysis_dependencies` markers exist across
+  `tests/`, minus the 2 in `tests/test_analysis_workflows_integration.py`
+  (deliberately absent from `scripts/quality_check.py`'s `test_targets`),
+  giving the documented 20 deselected.
+- `doc/TIER3_SYSTEM.md`'s rewritten five-file fast-tier paragraph is
+  accurate on tier *shape*: fast (unmarked) test counts per file are 6
+  (`createBinning`), 11 (`FindBHWindow`), 2 (`ExtractFitParameters`), 0
+  (`ExtractPostfitFromWS`), 2 (`PreFit`), and only
+  `tests/test_extract_fit_parameters.py` and `tests/test_pre_fit.py`
+  contain `sys.modules["ROOT"]` stubs.
+- CI: `12a17e1`, `fde3006` and `b4b9d36` all concluded `success` (the
+  last confirmed directly against its own run record, run
+  34123857025, rather than from a polling script).
+
+### What changed (the four defects)
+
+- **`python/PreFit.py`: one line of stdout that the pre-refactor code
+  never printed.** Chunk 17.B added a `print("==================")`
+  between the sampling phase and the "Starting fit of %d best samples"
+  banner. The pre-refactor `Fit()` went straight from the sampling
+  phase's own `w.Print()` to that banner, printing exactly one divider
+  for the whole transition - confirmed twice over, from
+  `git show dab5cbd^:python/PreFit.py` and from the untouched
+  near-duplicate `python/PreFitWS.py:119-127`, which still carries the
+  original shape. Chunk 17's premise is verbatim behaviour
+  preservation, and `b4b9d36` corrected the stopwatch placement *in
+  this same region* without noticing the added line. Removed; the two
+  files' `print(...)` sets are now identical. Nothing parses this
+  output (checked across `.py`/`.sh`/`.cpp`), so the practical impact
+  was cosmetic.
+- **The "exactly what CI runs" claim was false, in four places.**
+  `scripts/run_all_gates.sh`'s header, `doc/TIER1_SYSTEM.md`,
+  `doc/TIER1_ENVIRONMENT_PROVENANCE.md` and `README.md` all stated the
+  script runs exactly what `.github/workflows/scientific-analysis.yml`
+  runs. It does not: that workflow has five gate steps and no
+  `FindBHWindow.py` dedicated-interpreter step, while the workflow in
+  turn runs submodule-checkout, `install.sh --check`/`--build` and
+  CVMFS-probe steps the script does not. Reworded all four to say the
+  first five gates match and the script is a deliberate superset of the
+  workflow's test gates. Also recorded, in the script's own header,
+  that nothing enforces gate-*step* parity between script and workflow:
+  the two `tests/test_repo_utils.py` coverage tests compare which test
+  *files* each references, and `tests/test_find_bh_window.py` is
+  already referenced by Gate 4, so deleting Gate 6 outright would not
+  fail any test. This is the same class of gap Copilot found in
+  `fde3006`, inverted.
+- **Two stale gate enumerations missed by `fde3006`.** That commit
+  added the runtime-readiness gate and updated
+  `doc/TIER1_SYSTEM.md`'s "three gates above" to "four", but
+  `doc/TIER3_SYSTEM.md`'s parallel "Runs every gate below in sequence -
+  ..." list and `README.md`'s equivalent sentence both still enumerated
+  the old five gates, omitting runtime-readiness. `doc/TIER3_SYSTEM.md`
+  also named the prepared-dependency gate as being "below" when that
+  document has no such section. Both updated to six gates, with
+  `doc/TIER3_SYSTEM.md` now pointing at `doc/TIER1_SYSTEM.md` for the
+  two gates documented there rather than in it. `doc/TIER2_SYSTEM.md`'s
+  own enumeration was incomplete in the same way and was extended to
+  six.
+- **`doc/TIER3_SYSTEM.md` overclaimed the `requires_root` marker, in
+  two places.** `b4b9d36`'s rewrite fixed the false "all five share one
+  `sys.modules`-stubbed fast tier" claim but carried over the old
+  sentence's assertion that each file "pairs with the same real, marked
+  `requires_root`+`requires_analysis_dependencies` ... tier".
+  `tests/test_find_bh_window.py` has zero `requires_root` markers: its
+  one marked test carries `requires_analysis_dependencies` alone, with
+  a source comment at `tests/test_find_bh_window.py:324` stating why
+  (`FindBHWindow.py` imports `uproot`/`pyBumpHunter`, never ROOT). The
+  same overclaim appeared in the blanket sentence under the Test-file
+  map ("Every real-ROOT/CVMFS-needing test above is marked both ..."),
+  which also contradicted that map's own `FindBHWindow.py` row. Both
+  rewritten to state the actual split - `requires_analysis_dependencies`
+  on all of them, `requires_root` on the four that need ROOT - and the
+  rewrite of the second one was checked to keep its following clause
+  ("... is what keeps a test that sources `setup_buildAndFit.sh` out of
+  the ordinary gate") pointing at the correct marker. Also fixed the
+  first paragraph's "but only where a fast tier exists" clause, which
+  read backwards: `ExtractPostfitFromWS.py` has no fast tier yet does
+  have the real, marked tier.
+
+Deliberately **not** changed: the three preceding 2026-09-07 entries in
+this file use `## <date> — <title>` while the 46 Tier-3 entries above
+them use `## <date>: <title>`. Both styles already exist in this file's
+history (the 2026-07 entries use the em dash), the record stays
+accurate and readable either way, and per this file's own append-only
+rule and the user's explicit instruction, existing entries are edited
+only for serious typesetting or text-malformation problems - which this
+is not. Nor were those entries edited to record the defects above; this
+entry is the correction of record for all four.
+
+### Verification performed
+
+- `python scripts/quality_check.py --mode full`: 198 passed, 20
+  deselected, Ruff clean, Black clean, exit code 0 (which includes both
+  gate-coverage tests - the new header text mentioning
+  `tests/test_find_bh_window.py` sits in a full-line comment and is
+  correctly stripped by `_strip_full_line_comments()`, so it creates no
+  false-positive coverage).
+- Real-ROOT: `python -m pytest tests/test_pre_fit.py -m
+  "requires_analysis_dependencies" -v`: 2 passed, 2 deselected, 6.06s -
+  confirms removing the divider changes no assertion or result.
+- `diff` of every `print("...")` string in `python/PreFit.py` against
+  `git show dab5cbd^:python/PreFit.py`: identical sets.
+- `bash -n scripts/run_all_gates.sh`: syntax OK.
+- `grep` for any residual "exactly what `.github`"/"exactly the
+  checks"/"every check `.github`" phrasing outside this log: none.
+- `grep -nE '[[:blank:]]+$'` across all changed files: clean.
+- `git diff --check`: clean.
+- `git diff --stat`: `README.md`, `doc/TIER1_SYSTEM.md`,
+  `doc/TIER1_ENVIRONMENT_PROVENANCE.md`, `doc/TIER2_SYSTEM.md`,
+  `doc/TIER3_SYSTEM.md`, `python/PreFit.py`,
+  `scripts/run_all_gates.sh`, `doc/ACTIVITY_LOG.md`.
+
+### Remaining open chunks
+
+None. This is a self-audit and accuracy-correction pass over
+already-complete work, not a new chunk.
+
+---
+
+## 2026-09-07 — Address a third round of GitHub Copilot PR review findings (gate runner and its coverage tests)
+
+### Objective
+Respond to a third Copilot review round, which flagged three problems
+with `scripts/run_all_gates.sh` and its two coverage tests: a
+ROOT-independent gate trapped behind the ROOT-availability check, a
+gate that duplicates another gate's coverage while proving less, and
+coverage assertions that can pass on text that is not part of any
+pytest command. Each was verified directly against the real files
+before anything was changed; all three were real.
+
+### What changed
+
+- **Real gap, confirmed and fixed: the prepared-dependency gate was
+  skipped whenever ROOT setup failed.** It sat inside the
+  `else` branch of the ROOT-availability check, yet its two tests
+  (`tests/test_repo_utils.py`'s
+  `test_external_dependency_checkouts_match_pinned_revisions` and
+  `..._have_no_tracked_source_changes`) need no ROOT at all - read
+  directly, they call `git -C <dir> rev-parse HEAD`, `git status
+  --short --untracked-files=no` and `Path.is_dir()`, and nothing else.
+  They carry `requires_analysis_dependencies` because they need the
+  prepared *checkouts*, not a ROOT runtime. Leaving them behind that
+  check contradicted the script's own documented
+  "all gates still run - one broken gate doesn't hide another"
+  contract, and let a missing CVMFS mount mask a genuine
+  dependency-checkout failure. Moved it ahead of the ROOT check as
+  Gate 2, invoked with the script's already-selected `$python_bin`
+  rather than a sourced LCG Python. Proved by replacing
+  `scripts/setup_buildAndFit.sh` with a stub that fails: Gate 2
+  PASSED while Gates 3-5 hard-failed, where previously it would not
+  have run at all. The stub was then reverted and
+  `git diff`/`git status` confirmed the file byte-identical to HEAD.
+- **Real duplication, confirmed and removed: the "FindBHWindow.py
+  dedicated-interpreter gate" ran exactly what another gate already
+  ran.** Read against `tests/test_find_bh_window.py`'s own
+  `_run_find_bh_window_script()` helper: that marked end-to-end test -
+  which the plotting-layer gate already selects - sources the same
+  setup script, exports the same
+  `PYTHONPATH="$repo_dir/pyBumpHunter:$PYTHONPATH"`, invokes the same
+  ambient `python3 python/FindBHWindow.py` against the same committed
+  J100 `PostFit_anaFit_sixPar_bkgOnly.root` fixture with the same
+  `--bkghist`/`--datahist` values, and additionally asserts
+  `MaskMin == 595.0`, `MaskMax == 691.0`, `BlindRange == "595,691"`,
+  the presence of `pyBHresult`, and both output PNGs. The separate gate
+  asserted only an exit status, so it was strictly weaker as well as
+  redundant. Its name was also a misnomer: it used the ambient
+  interpreter, not the `pyBumpHunter/pyBH_env` one
+  `run_masking.run_bumphunter()` actually invokes in production (that
+  venv is confirmed broken here - missing `uproot` and `matplotlib` -
+  and is already recorded under Known limitations). Removed; the script
+  is now five gates, not six.
+- **Consequence of the above, corrected in the same pass**: with the
+  duplicate gate gone the script's five gates are once again exactly
+  the five test gates `.github/workflows/scientific-analysis.yml`
+  runs, so the "superset of that workflow's test gates" wording
+  introduced in `5699336` (itself the fix for an earlier "exactly what
+  CI runs" overclaim) is now obsolete. Reverted to a plain equality
+  claim in all four places, each still noting that the workflow
+  additionally runs submodule-checkout/`install.sh`/CVMFS-probe steps
+  the script does not: `scripts/run_all_gates.sh`'s header,
+  `doc/TIER1_SYSTEM.md`, `doc/TIER1_ENVIRONMENT_PROVENANCE.md` and
+  `README.md`.
+- **Real false-positive path, confirmed and fixed (the suppressed
+  finding): the coverage assertions searched whole-file text.** Both
+  gate-coverage tests compared selectors and filenames against the
+  entire comment-stripped file, so any occurrence - an `echo`, a
+  workflow `name:`, a variable assignment, an unrelated shell block -
+  satisfied them even after the real gate was deleted. Added
+  `_pytest_command_lines()`, which strips full-line comments, joins
+  backslash-continued lines into single logical lines, and keeps only
+  those logical lines that actually invoke pytest (`_PYTEST_INVOCATION`
+  matches `-m pytest` or a `pytest`/`.../bin/pytest` command word,
+  deliberately not a bare "pytest" substring, which appears in prose
+  and step names throughout both files). Both tests now assert against
+  that text alone. Each also passes a `non_pytest_sentinel` -
+  `"[run-all-gates]"` for the script, `"runs-on:"` for the workflow -
+  a string the source really contains but only outside any pytest
+  command; if it survives extraction the test fails immediately, so a
+  future over-permissive extractor cannot silently make every
+  assertion vacuous.
+  Proved in both directions. Sabotage: deleted Gate 3's real pytest
+  invocation while leaving `authoritative_setup_provides_scientific_runtime`
+  behind in an `echo` line. The new test failed with
+  `is missing a dedicated selector for these ... tests:
+  ['test_authoritative_setup_provides_scientific_runtime']`, while the
+  old substring logic, run against that same sabotaged file, reported
+  the selector "present" and would have passed - its only occurrence
+  being the echo line. Negative control: monkeypatching
+  `_pytest_command_lines` to return all non-comment text made the
+  sentinel assertion fire as designed. The script was then restored and
+  re-verified.
+- **Documentation**: the gate count went six -> five in
+  `README.md`, `doc/TIER1_SYSTEM.md`, `doc/TIER2_SYSTEM.md`,
+  `doc/TIER1_ENVIRONMENT_PROVENANCE.md` and `doc/TIER3_SYSTEM.md`, with
+  the two ROOT-free gates now described as always running first.
+  `doc/TIER3_SYSTEM.md`'s `### FindBHWindow.py dedicated-interpreter
+  gate` section became `### FindBHWindow.py manual reproduction command
+  (not a separate gate)`: the command is retained, because it is still
+  the useful hand-runnable form for debugging, but the section now
+  states plainly that the *automated* proof is
+  `tests/test_find_bh_window.py`'s marked test (run by the
+  plotting-layer gate and by CI), that the script deliberately does not
+  run the command as a gate, and that neither route exercises the
+  production `pyBumpHunter/pyBH_env` interpreter. Three further
+  references to it as a "gate" - in the gate-coverage summary, the
+  Known-limitations entry, and the Completion definition - were
+  repointed to that test.
+
+Deliberately **not** changed: `doc/TIER3_COMPLETION_PLAN.md`'s Chunk 18
+instruction to "Add the new `FindBHWindow.py` dedicated-interpreter gate
+command" records the plan as approved and executed, and the command it
+refers to still exists (renamed); rewriting a completed plan's own
+instructions to match a later refactor would misrepresent what was
+planned. This file's earlier entries describing a six-gate script are
+likewise left unedited per its append-only rule - they were accurate
+when written, and this entry is the correction of record.
+
+### Verification performed
+
+- `bash scripts/run_all_gates.sh`: exit code 0, all five gates PASSED -
+  lightweight (198 passed, 20 deselected); prepared-dependency (2
+  passed, 14 deselected, run before the ROOT check under the dev venv);
+  scientific runtime-readiness (1 passed, 2.56s); J100/J50 scientific
+  gate (1 passed, 72.45s); plotting-layer/hot-path real-ROOT gate (18
+  passed, 28 deselected, 50.44s).
+- ROOT-failure simulation (stubbed `scripts/setup_buildAndFit.sh`):
+  Gate 2 PASSED, Gates 3-5 reported the hard ROOT failure, script
+  exited 1; stub reverted and the file confirmed byte-identical to
+  HEAD. Gate 1 also failed in that simulation, as expected - the
+  lightweight gate contains its own test asserting that file's
+  authoritative content - which is itself a useful confirmation that
+  the file is guarded.
+- `python scripts/quality_check.py --mode full`: 198 passed, 20
+  deselected, Ruff clean, Black clean, exit code 0.
+- Both sabotage/negative-control experiments above, then restore and
+  re-run: `tests/test_repo_utils.py` 14 passed, 2 deselected.
+- `bash -n scripts/run_all_gates.sh`: syntax OK; file mode still 755.
+- `grep` for residual "dedicated-interpreter gate"/"six gates"/"Gate 6"
+  outside this log and `doc/TIER3_COMPLETION_PLAN.md`: none.
+- `grep -nE '[[:blank:]]+$'` across all changed files: clean.
+- `git diff --check`: clean.
+- CI: `5699336` (the preceding self-audit commit) concluded `success`.
+
+### Remaining open chunks
+
+None. This is a third review-response pass over already-complete work,
+not a new chunk.
+
+---
+
+## 2026-09-07 — Address a fourth round of GitHub Copilot PR review findings (gate extractor anchoring, vacuous ranking assertions)
+
+### Objective
+Respond to a fourth Copilot review round: the pytest-command extractor
+added in `2e03d2c` was unanchored and therefore still accepted echoed
+commands - the exact false positive it was introduced to prevent - and
+`tests/test_pre_fit.py`'s ranking test scored every trial identically,
+making its ranking assertions vacuous. Both were verified empirically
+before anything changed; both were real.
+
+### What changed
+
+- **Real false positive, confirmed and fixed: `_PYTEST_INVOCATION` was
+  unanchored.** The previous pattern
+  `(?:-m\s+pytest|(?:^|[\s/])pytest)(?:\s|$)` searched anywhere in a
+  logical line, so
+  `echo "python -m pytest tests/test_pre_fit.py -v"` and a workflow
+  `- name:` mentioning the command both matched. The sabotage
+  experiment run for `2e03d2c` happened not to expose this because the
+  echo it inserted (`skipping authoritative_setup...`) contained no
+  `-m pytest`; a fuller sabotage does. Reproduced directly: deleted
+  Gate 3's real invocation from `scripts/run_all_gates.sh` and left the
+  *entire* command text inside an `echo`. The old pattern classified
+  that echo as a pytest command, so the coverage check would still have
+  reported the gate covered; the new anchored pattern makes the test
+  fail with
+  `missing a dedicated selector ... ['test_authoritative_setup_provides_scientific_runtime']`.
+  Replaced with a pattern anchored at the command position of the
+  logical line, accepting `python`/`python3`/`python3.9`,
+  `/path/to/python`, `"$python_bin"`, a bare `pytest`/`.../bin/pytest`,
+  and any of those behind this script's own `run_gate "<description>"`
+  wrapper. Verified against both real files: 4 pytest invocations
+  matched in `scripts/run_all_gates.sh` and 4 in
+  `.github/workflows/scientific-analysis.yml` - every real one, no
+  echoes.
+- **Added the echo-line regression test Copilot asked for**:
+  `test_pytest_command_lines_ignores_echoed_commands()` asserts
+  `_pytest_command_lines()` returns nothing for a block containing an
+  `echo`ed command, a single-quoted `echo`, a commented-out command, a
+  `step_name=` assignment and a `printf`, and that all five genuine
+  invocation shapes are still recognised with backslash continuations
+  joined. This pins the helper's contract directly rather than leaving
+  it to a manual sabotage experiment.
+- **Real vacuous assertion, confirmed and fixed: every trial in the
+  ranking test scored identically.** `_FakeCandidateTF1.Integral()`
+  returned a constant `1.0`, and `_select_best_parameter_sets()` calls
+  `Integral()` and then overwrites parameters 0-9 with fixed values
+  (`p0`, 80, 10, ...) before scoring - so `p0 = Exp(integral/1.0)` was
+  constant and the summed-abs-params score was identical for all 30
+  trials. Measured directly before the fix: **1 distinct score across
+  30 trials** (92.71828...), and all five returned parameter arrays
+  identical. `chi2_values == sorted(chi2_values)` was therefore
+  trivially true, and an implementation keeping any five duplicates
+  would have passed. Fixed at the root cause: `Integral()` now depends
+  on the current parameters, as ROOT's real `TF1::Integral` does - and
+  since `_select_best_parameter_sets()` calls it while the parameters
+  are still the freshly randomized ones, `p0` is in fact the only
+  channel through which each trial's randomization reaches the score at
+  all. Measured after: **30 distinct scores across 30 trials**.
+- **Strengthened the ranking assertions to match.** The test now spies
+  on every score handed out and asserts: all `nRetries1` scores are
+  distinct (guarding the test's own premise, with an explicit failure
+  message naming the vacuousness if they ever collapse again); the
+  returned chi2 list equals `sorted(observed_scores)[:nRetries2]`
+  exactly, not merely "is sorted"; each retained parameter array
+  belongs to its own recorded chi2 (`pars[0] == chi2 - 90`, since the
+  scorer returns `|p0| + |80| + |10|` and the loop writes exactly 80
+  and 10 into parameters 1 and 2 before scoring); and all five arrays
+  are distinct. The determinism half additionally asserts the whole
+  observed score sequence reproduces.
+- **Added the scripted-sequence test Copilot suggested as the
+  alternative**:
+  `test_select_best_parameter_sets_keeps_the_exact_minima_of_a_scripted_score_sequence()`
+  feeds a known, deliberately unsorted 12-value sequence - global
+  maximum first, global minimum last, so "keep the first N" and "keep
+  the last N" are both ruled out - and asserts the returned four chi2
+  values are exactly `[1.0, 3.0, 3.5, 8.0]`, plus that `score_fn` was
+  called exactly `nRetries1` times. This checks the extracted
+  `bisect.insort`/`pop` bookkeeping against values chosen in advance
+  rather than against whatever the seeded randomization produced.
+- **Refreshed every gate figure the two new tests changed**, since
+  leaving them would have re-introduced exactly the staleness audited
+  earlier today: lightweight gate `218 collected/198 passed` ->
+  `220 collected/200 passed` in `doc/TIER1_SYSTEM.md`,
+  `doc/TIER2_SYSTEM.md`, `doc/TIER1_ENVIRONMENT_PROVENANCE.md` and
+  `doc/TIER3_SYSTEM.md`; prepared-dependency gate `2 passed, 14
+  deselected` -> `15 deselected`; the plotting-layer files' unfiltered
+  count `46` -> `47` and its marker-filtered `28 deselected` -> `29`;
+  and the per-gate timings to this run's real measurements (2.27s
+  runtime-readiness, 74.68s scientific, 59.06s unfiltered
+  plotting-layer). The `47 passed` figure was re-measured for real
+  under a sourced CVMFS/LCG runtime rather than inferred from the
+  collection count.
+
+### Verification performed
+
+- `bash scripts/run_all_gates.sh`: exit code 0, all five gates PASSED -
+  lightweight (200 passed, 20 deselected); prepared-dependency (2
+  passed, 15 deselected); scientific runtime-readiness (1 passed,
+  2.27s); J100/J50 scientific gate (1 passed, 74.68s);
+  plotting-layer/hot-path real-ROOT gate (18 passed, 29 deselected,
+  51.55s).
+- Real-ROOT, unfiltered: the plotting-layer gate's 8 files with no `-m`
+  filter - 47 passed in 59.06s.
+- `python scripts/quality_check.py --mode full`: 220 collected, 200
+  passed, 20 deselected, Ruff clean, Black clean, exit code 0.
+- Empirical before/after on the ranking test: 1 distinct score in 30
+  trials before, 30 distinct after; the retained five confirmed equal
+  to the five smallest observed, with `pars[0] == chi2 - 90` holding
+  for each.
+- Echo-form sabotage reproduced and the old pattern shown to accept it,
+  the new pattern shown to reject it, then `scripts/run_all_gates.sh`
+  restored and confirmed identical to its committed state.
+- Anchored pattern checked against both real files: 4 genuine pytest
+  invocations matched in each, no echo or step-name lines.
+- `grep` for residual `218`/`198 passed`/`14 deselected`/`28
+  deselected`/`46 passed`/`2.62`/`73.22` outside this log: none.
+- `grep -nE '[[:blank:]]+$'` across all changed files: clean.
+- `git diff --check`: clean.
+- CI: `2e03d2c` (the preceding commit) concluded `success`.
+
+### Remaining open chunks
+
+None. This is a fourth review-response pass over already-complete work,
+not a new chunk.
+
+---
+
+## 2026-09-07 — Fix a fourth, never-cited copy of Chunk 17's "no ROOT calls of its own" claim
+
+### Objective
+While walking back through each Copilot review comment one by one with
+the user, tracing the origin of round 1's "no ROOT calls of its
+own"/"stub-free" claim turned up a copy that no review round ever cited
+and that all four previous response passes therefore missed.
+
+### What changed
+
+- `git grep "no ROOT calls of its own" 34315d1` showed the claim stood
+  in **four** places when round 1 reviewed the branch:
+  `python/PreFit.py:171` (cited), `doc/TIER3_SYSTEM.md:219` (cited),
+  `doc/ACTIVITY_LOG.md:9490` (cited), and
+  `doc/TIER3_COMPLETION_PLAN.md:1879` (**never cited**). The first two
+  were corrected in `fde3006`; the activity-log copy is left as written
+  per this file's append-only rule. The plan-document copy - the Chunk
+  17 design table's cell for `_select_best_parameter_sets` - survived
+  untouched through all four review-response commits.
+- Root cause of the miss: the sweep after round 1 grepped for
+  `stub-free` (which reached 0 occurrences outside this log) but never
+  for the *other* half of the same false claim, `no ROOT calls of its
+  own`. Copilot cited three of the four sites and the fourth was
+  assumed absent rather than checked. This is the same
+  fix-the-citation-not-the-class scoping failure that made round 2
+  revisit `tests/test_pre_fit.py`'s lines 28/187 after round 1 fixed
+  only the cited line 189.
+- Corrected that cell to state the actual property - histogram scoring
+  injected through the caller's `h.Chisquare(...)` closure, so the
+  method never touches the data histogram directly, while still calling
+  `ROOT.TStopwatch`/`ROOT.TMath` for timing and the `Exp`/`Log`
+  initial-guess math - and noted inline that the cell originally
+  predicted "no ROOT calls of its own", which the implementation showed
+  to be wrong. The prediction is kept visible rather than silently
+  overwritten, since this document records a design that was reviewed
+  and approved before implementation; unlike Chunk 18's
+  `FindBHWindow.py` gate instruction (deliberately left as the plan of
+  record, since it was executed faithfully and only later refactored),
+  this cell asserted a *property of the code* that was never true, and
+  the same document's Chunk 17 Step B prose had already been corrected
+  for the identical error - leaving one half corrected and the other
+  half false was the worse option.
+- Swept for every related phrasing rather than just this one, to avoid
+  a fifth pass: `no ROOT calls`, `ROOT-independent`, `without ROOT`,
+  `zero ROOT`, `never touches ROOT`, plus every line mentioning
+  `_select_best_parameter_sets`. All remaining hits were verified
+  accurate - `createBinning.py`'s `parse_args()`/`resolve_bin_edges()`,
+  `plotPostFit.py`'s `parse_args()`, `FindBHWindow.py`'s `parse_args()`
+  and `tests/test_pre_fit.py`'s `_score_by_summed_abs_params()`
+  docstring all genuinely make no ROOT calls. The Chunk 17 row at
+  `doc/TIER3_COMPLETION_PLAN.md:403` was checked and makes no
+  ROOT-independence claim.
+
+### Verification performed
+
+- `grep -rn "no ROOT calls of its own"` outside `doc/ACTIVITY_LOG.md`:
+  the only remaining occurrence is the phrase quoted inside the
+  correction note itself.
+- `python scripts/quality_check.py --mode full`: 220 collected, 200
+  passed, 20 deselected, Ruff clean, Black clean, exit code 0.
+- `grep -nE '[[:blank:]]+$' doc/TIER3_COMPLETION_PLAN.md`: clean.
+- `git diff --check`: clean.
+- Documentation-only change; no source, test or gate behaviour touched.
+
+### Remaining open chunks
+
+None.
+
+---
+
+## 2026-09-07 — Generalise each Copilot finding to its class; two sister defects and two missing guards found
+
+### Objective
+The user asked whether the thirteen Copilot findings had undiscovered
+root causes or sister instances - explicitly warning against assuming a
+file is correct because it has not been edited recently, or that a
+comment about one line cannot apply elsewhere. Each finding was
+therefore generalised to a defect *class* and the class searched for
+across the whole repository.
+
+### What changed
+
+Two sister defects, both real and both in tests never touched by any
+review round:
+
+- **`test_git_hook_pre_commit_gate_matches_authoritative_commands`
+  false-passed.** It asserted the mandatory local gate's commands by
+  searching `.githooks/pre-commit`'s raw text. Proved by commenting the
+  hook's *entire* scientific gate out: the test still passed. This is
+  Comment 3's defect on the repository's most load-bearing check.
+- **`test_ci_runs_locked_lightweight_full_gate` false-passed.** Same
+  cause. Proved by commenting the lightweight-gate command out of
+  `.github/workflows/tier1-root-comparison.yml`: the test still passed,
+  so CI could stop running the gate with no test objecting.
+
+Both now assert through a new `_executable_command_lines()` helper -
+full-line comments dropped, backslash continuations joined, pure-output
+lines (`echo`/`printf`/`cat`) and heredoc bodies removed - and the
+pytest assertions go through the existing `_pytest_command_lines()`.
+`_strip_full_line_comments()`/`_join_continuations()` were hoisted so
+all three helpers share one implementation. The *negative* assertions
+(`"requires_root" not in workflow`) deliberately stay against raw text:
+for a must-not-appear check, raw text is the stricter side, since it
+also rejects a commented-out mention. Added
+`test_executable_command_lines_ignores_comments_and_echoes()`, which
+itself found a gap in the first version of the helper (heredoc bodies
+carry no command word to filter on) before that version was committed.
+
+Two missing guards, both being the reason earlier findings escaped:
+
+- **No test captured any hot-path script's console output.** Chunk
+  17.A's characterization test pinned only `(bestPars, nbkg)` and
+  determinism, so Chunk 17.B's two stdout/timing changes - the
+  stopwatch moved after the banner, and an added `==================`
+  divider - were invisible to every gate and were caught only by review
+  and by hand-diffing git history. Added a console-output assertion to
+  that test: `"Finished sampling"` must be immediately preceded by one
+  divider and immediately followed by the "Starting fit" banner.
+  Verified it catches the historical defect by re-introducing the
+  divider - the test fails; removed again.
+- **`resolve_bin_edges()`'s fake `.Eval()` returned a constant**, so no
+  test could see *which* x the production loop evaluates: passing a
+  bin's upper edge instead of its lower edge would have produced
+  identical output. Added a recording fake asserting the evaluation
+  points equal the returned edges except the last, and verified it
+  fails under a deliberate `Eval(bin_edge + 1)` mutation.
+
+Verified clean, so no change made:
+
+- Every `requires_root` test also carries
+  `requires_analysis_dependencies` (a test with only the former would
+  run in the lightweight gate and fail in CVMFS-less CI).
+- All five Step-B extractions preserve their `print()` call multisets,
+  compared by AST rather than regex - an initial regex sweep reported a
+  false difference on `ExtractPostfitFromWS.py` because the
+  pre-extraction file wrote `print (` with a space, which Black later
+  normalised.
+- Chunk 16a's Python-2 `.values()[-1]` indexing and Chunk 16b's
+  key-vs-value `next(iter(dict))` pattern appear nowhere else in
+  hot-path code; all eight `ExtractPostfitFromWS` accessors now use
+  `.values()`.
+- All 48 function/method names in `doc/TIER3_SYSTEM.md`'s module-map
+  rows exist in the sources they describe (checked by AST).
+- `python/PreFitWS.py` and `python/run_nloFit.py` are unreachable from
+  the J100/J50 launchers, and `PreFitWS.PreFitter` takes a
+  workspace-based constructor with no `parRangeLow`/`nPars`, so it does
+  not share `PreFit.py`'s 7-vs-10-element fragility. It is a structural
+  sibling of `Fit()`'s sampling block, not a whole-file duplicate.
+- The installer policy tests already strip comments and use negative
+  assertions, which is sound. Notably that correct technique was
+  already present in `tests/test_repo_utils.py` before Comment 3 was
+  raised and was not reused.
+
+Flagged, not changed: `python/createExtractionGraph_signalInjection.py:337`
+has a live `list(next(iter(list(dict_file.items()))))[0]` - the same
+key-vs-value shape as Chunk 16b's bug. That file is outside Tier 3's
+scope and unreachable from the J100/J50 launchers, and the intent of
+that line has not been verified, so it is recorded here rather than
+altered.
+
+Gate figures refreshed for the two new tests: lightweight 222
+collected/202 passed/20 deselected; prepared-dependency 2 passed/16
+deselected; plotting-layer files 48 unfiltered (51.20s, re-measured
+under a real CVMFS runtime, not inferred).
+
+### Verification performed
+
+- `python scripts/quality_check.py --mode full`: 222 collected, 202
+  passed, 20 deselected, Ruff clean, Black clean, exit code 0.
+- Real-ROOT `tests/test_pre_fit.py -m requires_analysis_dependencies`:
+  2 passed.
+- Unfiltered plotting-layer files under real ROOT: 48 passed, 51.20s.
+- Four sabotage/restore experiments, each failing before the fix and
+  after re-breaking, then restored and confirmed clean: hook scientific
+  gate commented out; CI gate command commented out; PreFit divider
+  re-introduced; `Eval(bin_edge + 1)` mutation.
+- `grep -nE '[[:blank:]]+$'` and `git diff --check`: clean.
+
+### Remaining open chunks
+
+None.
+
+---
+
+## 2026-09-07 — Address a fifth round of GitHub Copilot PR review findings (YAML metadata treated as executable)
+
+### Objective
+Respond to a fifth Copilot review round, raised against
+`tests/test_repo_utils.py`'s `_executable_command_lines()` - code
+committed thirty-four minutes earlier in `ffd6b92`, the commit whose
+whole purpose was to fix this defect class in two other tests. Rated
+High, and correct.
+
+### What changed
+
+- **Real false positive, confirmed and fixed.** The helper filters
+  shell lines: comments, `echo`/`printf`/`cat`, heredoc bodies. A
+  GitHub Actions workflow is YAML, so most of its lines are metadata,
+  and a step's `name:` is free text. `- name: python
+  scripts/quality_check.py --mode full` carries no output-only command
+  word, so it survived every filter and satisfied the assertion.
+  Reproduced end to end: deleting the real `run:` command from
+  `.github/workflows/tier1-root-comparison.yml` while moving its text
+  into the step's `name:` left
+  `test_ci_runs_locked_lightweight_full_gate` passing.
+- Added `_workflow_run_block_lines()`, which returns only the contents
+  of a workflow's `run:` blocks - block scalars by indentation, plus
+  inline `run: <command>` - and routed both workflow-reading tests
+  through it before any command search. This is Copilot's primary
+  suggestion; the alternative it offered (excluding YAML keys
+  generically) would also have dropped inline `run:` commands.
+- Moved the scientific-workflow coverage test's negative-control
+  sentinel from `"runs-on:"` to `"set -o pipefail"`. The old sentinel
+  sits in YAML metadata, which the new restriction discards, so it
+  would have been trivially absent and the control vacuous. The new one
+  is a real command inside a `run:` block that is not a pytest
+  invocation, so it still proves the extractor excludes non-pytest
+  commands.
+- Added `test_workflow_run_block_lines_excludes_yaml_metadata()`,
+  asserting that a block of `name:`/`uses:`/`with:`/`env:` lines
+  extracts to nothing, while a block scalar's contents and an inline
+  `run:` command both survive.
+
+### Why this was not caught in `ffd6b92`
+
+The sabotage used to sign that commit off commented the gate command
+out but left the step name alone. The workflow's real step name is
+"Run complete lightweight quality gate", which does not contain the
+command text, so the test failed and the fix looked proven. The
+adversarial case - delete the command *and* put its text where a
+surviving line will carry it - was not tried.
+
+This is the second time in this cycle that a verification was shaped so
+the weak spot went unexercised: the same thing happened one round
+earlier, when the echo used to prove the pytest parser contained no
+`-m pytest` and so was the one echo the unanchored pattern rejected.
+Both times a green result was reported as evidence the mechanism
+worked. The corrective taken here is to keep the adversarial case in a
+committed regression test rather than in a one-off experiment, which is
+now done for all three helpers.
+
+### Verification performed
+
+- Four sabotage cases, each failing as it should and then restored:
+  (1) CI gate command deleted with its text moved into the step
+  `name:` - the case that previously passed; (2) the same command
+  merely commented out - the previously-fixed case, still caught;
+  (3) `tests/test_pre_fit.py` dropped from the scientific workflow's
+  `run:` block while a step name mentions it; (4) the pre-commit hook's
+  scientific gate commented out.
+- `python scripts/quality_check.py --mode full`: 223 collected, 203
+  passed, 20 deselected, Ruff clean, Black clean, exit code 0.
+- Gate figures refreshed accordingly (lightweight 223/203;
+  prepared-dependency 2 passed, 17 deselected).
+- `grep -nE '[[:blank:]]+$'` and `git diff --check`: clean.
+
+### Remaining open chunks
+
+None. This is a fifth review-response pass over already-complete work,
+not a new chunk.
+
+---
+
+## 2026-09-07 — Apply the executable-text standard to every remaining policy assertion
+
+### Objective
+The user asked that all tests be brought up to the standard established
+over the last five review rounds, so the same defect class cannot be
+reported a sixth time. The class: a test asserts a property of a file
+by searching its raw text, where a match from an inert position - a
+comment, a step name, a label - satisfies the assertion while the real
+thing is gone.
+
+### What changed
+
+Every positive assertion of this shape in `tests/` was enumerated by
+AST rather than by eye: find variables assigned from `read_text()`, then
+find `assert "<literal>" in <that variable>`. Fifty-three remained, in
+three groups.
+
+- **The two installer policy tests (47 assertions).**
+  `test_install_script_is_non_destructive` and
+  `test_pybumphunter_installer_is_non_destructive_and_reproducible`
+  asserted against raw `installer_text`, so a comment mentioning
+  `verify_parent_gitlink`, `cmake --build`, `--no-deps` or any expected
+  log message satisfied the check after the real line was removed. Each
+  now reads `active_script`, the comment-stripped text those same tests
+  already compute two lines above for their *negative* assertions -
+  the correct variable was present and simply unused. Comment-stripping
+  is the right strength here rather than `_executable_command_lines()`,
+  because several of these assertions deliberately target `echo`
+  message strings, which that helper removes.
+- **The CI workflow's five configuration assertions.** `uses:`,
+  `python-version:`, `requirements-dev-lock.txt` and `tier-2-m365` were
+  searched in raw YAML, so a comment or a step `name:` quoting a pinned
+  value satisfied them. Added `_yaml_config_lines()`, which strips
+  full-line comments, strips trailing `# ...` comments respecting
+  quotes, and drops every `name:` line, then routed those five through
+  it. `pyyaml` is not in the locked development environment, so the
+  workflow cannot be parsed properly; this is the strongest check
+  available without adding a dependency, and it closes both inert
+  positions that actually exist in these files.
+- **The dependency-marker detector.** `_dependency_marked_test_names()`
+  matched one exact spelling of the decorator line, so
+  `@pytest.mark.requires_analysis_dependencies()` - equally valid -
+  would not have been recognised, letting a marked test exist with no
+  gate selecting it and the per-test map guard still passing. Replaced
+  with `_DEPENDENCY_MARKER`, accepting the bare and parenthesised
+  forms and tolerating a trailing comment, while still rejecting a
+  commented-out marker, a `pytestmark` assignment, and a
+  longer-suffixed name. The file-level filter is left deliberately
+  over-inclusive, which errs toward a false failure rather than a false
+  pass, and now says so.
+
+Two regression tests were added -
+`test_yaml_config_lines_excludes_comments_and_step_names()` and
+`test_dependency_marker_is_recognised_however_it_is_written()` - so
+these properties are pinned by committed tests rather than by whichever
+sabotage happens to be tried. That is the corrective for the specific
+recurring mistake in this cycle: twice, a verification was shaped so the
+weak spot went unexercised, and the passing result was reported as proof.
+
+Judged out of class, unchanged: `tests/test_find_bh_window.py:359`
+(`"pyBHresult" in result` is a dict-key check on parsed JSON, not a text
+search - a false positive of the AST sweep) and
+`tests/test_run_templates.py:210` (a substring check on a file the code
+under test *generates*, where no "someone disabled a check" path
+exists; it is a weaker assertion than checking the exact field, but a
+different concern).
+
+### Verification performed
+
+- Each of the three groups sabotaged by planting the searched text in
+  the inert position after removing the real one, and each test
+  confirmed to fail: `tier-2-m365` left only in a workflow comment;
+  `verify_parent_gitlink` left only in an `install.sh` comment;
+  `--no-deps` left only in an `install_pyBumpHunter.sh` comment. All
+  three files restored afterwards.
+- The old logic was re-run against those same three sabotages and
+  confirmed to return a match in every case - so each really would have
+  passed before this change, rather than being assumed to.
+- Re-ran the AST enumeration afterwards: **0 positive raw-text
+  assertions remain** across every file in `tests/`.
+- `python scripts/quality_check.py --mode full`: 225 collected, 205
+  passed, 20 deselected, Ruff clean, Black clean, exit code 0.
+- Gate figures refreshed (lightweight 225/205; prepared-dependency
+  2 passed, 19 deselected).
+- `grep -nE '[[:blank:]]+$'` and `git diff --check`: clean.
+
+### Remaining open chunks
+
+None.
+
+## 2026-09-08 — Address a sixth round of Copilot review findings (a stale scientific-gate figure), and make figure drift a test failure
+
+### Objective
+
+Copilot (Low) reported that `doc/TIER3_SYSTEM.md` still records the
+scientific gate as **182.11 seconds** in two places (lines 46 and 385)
+while `doc/TIER1_SYSTEM.md` and `doc/TIER1_ENVIRONMENT_PROVENANCE.md`
+record the later rerun as **74.68 seconds**, making the current
+reference documentation self-contradictory within one pull request.
+Confirm it, fix it, and stop the class rather than the two citations.
+
+### What changed
+
+- **Confirmed and fixed.** `doc/ACTIVITY_LOG.md` is append-only, so
+  entry order settles which figure is later: 182.11s is recorded at
+  line 9563, and the 74.68s rerun at line 10742. No scientific-gate
+  timing is recorded after it. So 74.68s is the latest measurement and
+  both `doc/TIER3_SYSTEM.md` citations were stale. Both updated.
+- **Why it was missed.** The commit that produced the 74.68s
+  measurement did grep for residual figures - but for `73.22` and
+  `2.62`, the values *it* had superseded. It never grepped `182.11`,
+  a figure written down two commits earlier and superseded by the same
+  rerun. The check was aimed at the numbers in front of it rather than
+  at every number the new measurement replaced. This is the third time
+  in this pull request that a gate figure has been updated in some
+  documents and left stale in another.
+- **Made the class a test failure**, since three rounds of careful
+  greppping have not held: added
+  `test_documented_gate_figures_agree_across_every_living_document`
+  and its `_documented_gate_runtimes()` helper. The helper flattens a
+  document (backslash continuations removed, whitespace collapsed,
+  because every one of these commands is wrapped and each document
+  wraps at a different column), finds each recorded
+  `N passed[, N deselected], T seconds` result, and attributes it to
+  the nearest gate command printed above it. The test then requires
+  every gate's runtime, and the lightweight gate's collected-test
+  count, to be identical across all six living documents.
+- The test also fails if a recorded runtime appears above every known
+  gate command, so documenting a new gate forces its command into
+  `_GATE_MARKERS` instead of leaving the figure silently unchecked;
+  and it fails if no scientific or runtime-readiness figure is found at
+  all, so a rewording cannot quietly make it vacuous.
+- Deliberately not covered, and why: `doc/ACTIVITY_LOG.md` and
+  `doc/TIER3_COMPLETION_PLAN.md` are excluded, since both record what
+  was measured at a point in time and are *supposed* to hold
+  superseded figures; and the check compares documents against each
+  other, not against a live run, so it catches drift between copies
+  rather than all four copies aging together.
+
+### Verification performed
+
+- Three sabotages, each confirmed to fail the new test: restoring
+  `182.11` on `doc/TIER3_SYSTEM.md` line 385 alone (the exact defect
+  Copilot reported); changing one document's `225 collected` to `220`;
+  and inserting a recorded runtime above any gate command. All three
+  restored afterwards, `git diff --stat` confirming only the intended
+  files changed.
+- `python scripts/quality_check.py --mode full`: 227 collected, 207
+  passed, 20 deselected, Ruff clean, Black clean (39 files), exit
+  code 0.
+- Gate figures refreshed for the two new tests: lightweight
+  `225 collected/205 passed` -> `227 collected/207 passed` in
+  `doc/TIER1_SYSTEM.md`, `doc/TIER2_SYSTEM.md`,
+  `doc/TIER1_ENVIRONMENT_PROVENANCE.md` and `doc/TIER3_SYSTEM.md` -
+  and the new test now enforces that those copies agree.
+- CI for `0daa75e`: "Complete lightweight and scientific test suite"
+  completed, conclusion **success**.
+- `grep -nE '[[:blank:]]+$'` and `git diff --check`: clean.
+
+### Noted, not changed
+
+- `.venv/bin/python` now reports **Python 3.12.14**, while the
+  documented development baseline and both CI workflows pin 3.12.13.
+  The three pinned tools still match exactly (pytest 9.1.1, Ruff
+  0.16.0, Black 26.5.1), and CI remains internally consistent, so this
+  is a local interpreter patch bump rather than a documentation error;
+  changing the CI pins is a separate decision and was not made here.
+
+### Remaining open chunks
+
+None.
+
+## 2026-09-08 — Audit every recorded gate figure across the documentation, and verify the ROOT-free counts by measurement
+
+### Objective
+
+Check every recorded selected-test count, outcome and timing in every
+document for consistency, and make them consistent. `ACTIVITY_LOG.md`
+is append-only, so its figures are history and were not touched.
+
+### What changed
+
+- **Extracted every figure mechanically** rather than by reading:
+  13 "Latest ..." claims across four documents, plus two historical
+  ones in `doc/TIER3_EXECUTION_TRACE.md`. No figures exist in
+  `README.md`, the workflows, or `scripts/`.
+- **Re-measured all five gates in one pass** (`bash
+  scripts/run_all_gates.sh`, exit 0, all five PASSED), plus the
+  plotting-layer gate a second time with no `-m` filter, so every
+  documented figure comes from one coherent set of runs.
+- **Four figures were stale against reality**, all corrected:
+  prepared-dependency `19` -> `22` deselected; runtime readiness
+  `2.27s` -> `3.69s`; scientific `74.68s` -> `134.41s`; plotting-layer
+  marker-filtered `29` -> `30` deselected.
+- **One documented figure was impossible, provable from the document
+  alone**: the plotting-layer gate recorded 48 collected with 18
+  selected and 29 deselected, which sums to 47. A test file had gained
+  a test and only the total was refreshed. That section now records
+  both variants of the gate separately - 48 collected/18 passed/30
+  deselected/132.61s under the marker filter, and 48 passed/66.82s
+  without it - since they are two different runs with legitimately
+  different figures.
+- **`doc/TIER3_EXECUTION_TRACE.md` Section 5 contradicted Section 2 of
+  the same document**, which is worse than a stale number: its closing
+  paragraph still said `createBinning.py` "still has no decomposition
+  into functions, no dedicated test file, and is still unregistered in
+  `quality_check.py`", all three of which Chunk 13 changed. Its figures
+  (289.19s, 172 passed) are a true record of the 2026-09-04 run that
+  fixed that file's syntax error, so they were **not** rewritten; the
+  block is now marked as measured then, and the contradicting
+  present-tense claims are past tense with a pointer to Section 2.
+- **Rewrote yesterday's figure-consistency test, which had two holes
+  this audit exposed.** It compared only timings and collected counts,
+  so the `19` -> `22` count drift was outside its scope entirely; and
+  its runtime pattern required the word "seconds", so
+  `doc/TIER3_EXECUTION_TRACE.md`'s `289.19s` never matched it. It now
+  compares collected/passed/selected/deselected/expected-failures/
+  seconds/files-unchanged, and matches both `74.68 seconds` and
+  `289.19s`.
+- **Scoped that test to claims introduced by the word "Latest"**, which
+  is the real line between "this is the current result", which every
+  document has to agree on, and "this is what that run measured", which
+  must not be rewritten - the same reason this log is append-only. Each
+  claim is also cut at the `exit code N` it ends with, so prose
+  explaining a figure cannot be read back as part of it.
+- **Added an arithmetic check**: where a gate records collected, passed
+  and deselected, passed plus deselected must equal collected. This is
+  the only check that catches a stale figure from one document alone,
+  with nothing to compare against and nothing re-run - and it is
+  exactly the plotting-layer defect above.
+- **Added `test_documented_gate_counts_match_a_real_collection`**,
+  which collects the two ROOT-free gates for real and compares the
+  counts to what the documents claim. This is the only check that
+  catches a count gone stale in *every* copy at once, or in the single
+  document that records one - the prepared-dependency `19` was stale in
+  the only place it appears, so no cross-document check could ever have
+  found it. The gate's target list is read out of
+  `scripts/quality_check.py` by AST, so dropping a file from the gate
+  fails this test too.
+- Timings are deliberately compared between documents but never
+  measured: the scientific gate has taken 74.68s, 131.40s and 134.41s
+  on this shared node for identical work, so a recorded timing is an
+  observation, not a property. Attempting to verify one would make the
+  suite fail on machine load.
+
+### Verification performed
+
+- Six sabotages, each restored afterwards. Caught: a cross-document
+  timing disagreement written in the abbreviated `99.99s` form; counts
+  changed *consistently* in all three documents to a total that cannot
+  add up; the original 48/18/29 plotting-layer defect; the
+  prepared-dependency count stale in its only copy; the lightweight
+  count stale in all four copies at once; and a test file deleted from
+  `scripts/quality_check.py`'s target list.
+- Two of those six passed against the first version of the rewritten
+  test and were only caught after fixing the seconds pattern and adding
+  the real-collection check - both recorded here because the first
+  version was reported as covering them.
+- `bash scripts/run_all_gates.sh`: exit code 0, all five gates PASSED -
+  lightweight (227 collected, 207 passed, 20 deselected, 2.01s);
+  prepared-dependency (2 passed, 21 deselected); runtime readiness (1
+  passed, 3.69s); J100/J50 scientific (1 passed, 134.41s);
+  plotting-layer marker-filtered (18 passed, 30 deselected, 132.61s).
+- Plotting-layer unfiltered, same sourced runtime: 48 passed, 66.82s.
+- The lightweight and prepared-dependency counts documented now are
+  `228 collected/208 passed/20 deselected` and `24 collected/2
+  passed/22 deselected`, measured *after* the two new tests were added,
+  which is why they exceed the gate-pass figures above by two. No other
+  documented figure is affected by those two tests.
+- `python scripts/quality_check.py --mode full`: 228 collected, 208
+  passed, 20 deselected, Ruff clean, Black clean (39 files), exit
+  code 0.
+- CI for `3c7e4b2`: "Complete lightweight and scientific test suite"
+  conclusion **success**.
+- `grep` for every superseded figure (`51.20`, `2.27 seconds`, `74.68`,
+  `19 deselected`, `29 deselected`, `227 collected`, `207 passed`,
+  `182.11`) outside this log: one deliberate hit, the timing-variance
+  illustration in `doc/TIER2_SYSTEM.md`.
+- `grep -nE '[[:blank:]]+$'` and `git diff --check`: clean.
+
+### Remaining open chunks
+
+None.
+
+## 2026-09-08 — Re-read every Copilot review comment on PR 19 as a set, and fix the two remaining raw-text policy checks it never reached
+
+### Objective
+
+The individual review rounds were each answered as they arrived. This
+pass fetched every comment Copilot has left on
+`tofitsch/FrequentistFramework` PR 19 — 16 inline comments across five
+reviews, plus the 8 "suppressed" comments that appear only inside the
+review summaries and are never posted inline — and checked all 24
+against the current tree rather than against the commit messages that
+claimed to have answered them.
+
+### What the audit found
+
+- All 24 findings are addressed in `0d3c853`. The 8 suppressed ones
+  were checked individually, since a suppressed comment is easy to miss:
+  the two most substantive were `doc/TIER3_SYSTEM.md`'s "all five
+  scripts use a stubbed fast tier" claim (now states plainly that the
+  fast tiers are three different shapes and that
+  `ExtractPostfitFromWS.py` has none) and `tests/test_pre_fit.py`'s
+  20-formula coverage claim (now narrowed to the one form the real-ROOT
+  test actually fits).
+- Copilot's sixth review, on `0d3c853`, returned "unable to review …
+  the user who requested the review has reached their quota limit". The
+  latest commit — the figure-consistency audit and its three new tests —
+  has therefore never been reviewed. Recorded here because the absence
+  of comments on it is a quota artefact, not a clean bill of health.
+- Copilot raised the same defect class five separate times: an
+  assertion that searches a file's raw text cannot prove the file
+  *runs* anything. Following the standing instruction not to treat an
+  unreviewed file as clean, every remaining raw-text policy assertion
+  in `tests/test_repo_utils.py` was swept for that class, and two
+  instances were found in tests no review round ever reached. Both were
+  confirmed by sabotage before being touched.
+
+### What changed
+
+- `_shell_invocation_lines()`: `_executable_command_lines()` with shell
+  function *definition* lines removed. A function's definition carries
+  its own name, so `"run_check" in executable_lines` was satisfied by
+  `run_check() {` alone. Replacing both of `install.sh`'s real
+  `run_check` calls with `echo "would run run_check here"` left
+  `test_install_script_is_non_destructive` passing. Six assertions in
+  the two installer tests (`run_check`, `setup_scientific_environment`,
+  `verify_parent_gitlink`, `verify_no_tracked_changes`,
+  `verify_roofit_extensions`, and the `--build)` dispatch's `run_build`)
+  now go through it. The remaining assertions in those tests stay on
+  comment-stripped text deliberately: they check message text, flags
+  and filenames, which legitimately appear inside `echo`.
+- `_declared_submodule_paths()`: reads `.gitmodules` through `git
+  config --file … --get-regexp`, the way git itself reads it, instead
+  of searching for `path = <name>`. Commenting out `path = quickFit`
+  and renaming the real entry `quickFit-RENAMED` left
+  `test_gitmodules_declares_expected_analysis_dependencies` passing,
+  and no other test in the suite reads `.gitmodules` at all, so nothing
+  else would have caught it.
+- Two new regression tests pin both sabotages
+  (`test_shell_invocation_lines_ignores_function_definitions_and_echoes`,
+  `test_declared_submodule_paths_ignores_commented_out_declarations`).
+
+### Verification performed
+
+- Three sabotages, each restored afterwards, all confirmed **passing
+  before** the change and **failing after**: the two `run_check` calls
+  replaced by echoes; the `--build)` dispatch's `run_build` call
+  replaced by an echo; the commented-out `.gitmodules` path.
+- Both new regression tests were themselves sabotaged to confirm they
+  are not vacuous: dropping the definition filter fails the first,
+  reverting `_declared_submodule_paths()` to a raw-text scan fails the
+  second. Restored, both pass.
+- `python scripts/quality_check.py --mode full`: 230 collected, 210
+  passed, 20 deselected, Ruff clean, Black clean (39 files), exit
+  code 0.
+- The lightweight and prepared-dependency figures in the four
+  documents that record them were updated to the values measured after
+  these two tests were added — `230 collected/210 passed/20 deselected`
+  and `26 collected/2 passed/24 deselected`. No ROOT gate's figures are
+  affected: neither new test is marked
+  `requires_analysis_dependencies`.
+- CI for `0d3c853`: "Complete lightweight and scientific test suite"
+  conclusion **success**.
+- `grep -nE '[[:blank:]]+$'` and `git diff --check`: clean.
+
+### Noted, not changed
+
+- `doc/ACTIVITY_LOG.md`'s earlier "stub-free" entries stay as written.
+  Copilot flagged one directly (line 9514); this log is append-only and
+  remains an accurate record of what was believed at the time, with the
+  correction recorded in the later entry that made it.
+
+### Remaining open chunks
+
+None.
+
+## 2026-09-08 — Reflow a comment whose line wrap orphaned its verb (seventh Copilot review round)
+
+### Objective
+
+Copilot's seventh review (the quota limit that blocked the sixth having
+cleared) raised one Low finding: `tests/test_extract_postfit_from_ws.py`
+"names only `GetH1Residuals()` even though the following block covers
+six accessors", and asked for the "omitted accessor list" to be
+restored.
+
+### What the finding actually was
+
+The diagnosis was wrong, but it was caused by a real defect.
+
+- Nothing was omitted. All six accessors were named, across a list that
+  wrapped between two lines - `GetNbins()/GetNpars()/GetNdof()/
+  GetH1Chi2()/GetH1Postfit()/` on the first, `GetH1Residuals()` opening
+  the second. Copilot's comment range began at the second of those
+  lines, so it read the continuation as the whole sentence.
+- Verified independently rather than merely rebutted: `7e6ff95`
+  ("Chunk 16b: fix the 6-of-8 accessors' key-vs-value fallback bug")
+  changed exactly `GetNbins`, `GetNpars`, `GetNdof`, `GetH1Chi2`,
+  `GetH1Postfit` and `GetH1Residuals`. Six changed accessors, six names
+  in the comment, six assertions below it. The comment was accurate.
+- The real defect: the wrap orphaned a plural verb from its list, so
+  the second line read alone as "GetH1Residuals() now correctly use
+  next(iter(dict.values())) in their ..." - a singular subject with a
+  plural verb, forming a sentence that looks complete and says
+  something false. That is what misled the reviewer, and would mislead
+  a person skimming from that line.
+
+### What changed
+
+- The comment is reflowed so its subject is "The six accessors Chunk
+  16b fixed", stating the count up front, and no line reads as a
+  standalone sentence. A closing line records that the six assertions
+  below are one per fixed accessor, so the comment is self-checking
+  against the block it describes. No assertion, and no production code,
+  was touched.
+
+### Generalised to the class
+
+Every comment and document line in the repository ending in `/` - a
+list continued onto the next line - was swept: 17 hits. Only this one
+had the defect; in the rest the continuation either carries more list
+items or reads correctly on its own. One was checked closely and
+deliberately left as written: `tests/test_pre_fit.py:24`'s "Unlike
+those two chunks' extractor classes" follows a list of *three* test
+files, but "those two chunks" refers to Chunks 15 and 16 named earlier
+in the same comment, and is correct.
+
+### Verification performed
+
+- `tests/test_extract_postfit_from_ws.py -m
+  "requires_analysis_dependencies"` under a sourced scientific runtime:
+  5 passed, 21.91s. Run because the edited comment sits inside a
+  snippet string that a real-ROOT subprocess executes, so a broken
+  quote would be a real failure rather than a cosmetic one.
+- `python scripts/quality_check.py --mode full`: 230 collected, 210
+  passed, 20 deselected, Ruff clean, Black clean (39 files), exit
+  code 0. Collection counts unchanged - no test was added or removed,
+  so no documented figure moved.
+- CI for `eef3e33`: the fork's push-triggered "Complete lightweight and
+  scientific test suite" concluded **success**; upstream PR 19's
+  pull_request-triggered lightweight gate also **success**.
+- `grep -nE '[[:blank:]]+$'` and `git diff --check`: clean.
+
+### Noted, not changed
+
+- The review reports "Files reviewed: 16/17 changed files". Which file
+  went unexamined is not exposed by the API, so it is recorded here as
+  unknown rather than guessed.
+- The review's own header asks for "final human confirmation" of the
+  scientific-runtime work. That is a request for maintainer sign-off,
+  not a code finding, and remains open.
+
+### Remaining open chunks
+
+None.
+
+## 2026-09-08 — Correct Tier 3's global behavior-preservation claim, which the deliberate bug-fix chunks contradicted (eighth Copilot review round)
+
+### Objective
+
+Copilot's eighth review raised two suppressed findings, both on
+`doc/TIER3_SYSTEM.md`: its opening claim that Tier 3 leaves "every
+public entry point's external behavior preserved exactly" (line 6, and
+again at line 12) and its Purpose statement's "never changing what any
+of it computes" (line 14) are contradicted by Chunks 16a and 16b, which
+changed public behavior on purpose. It asked for the actual policy to be
+stated instead: preserve behavior during extraction, with separately
+identified bug-fix chunks allowed to change it.
+
+### The finding is correct
+
+Verified against the commits rather than taken on trust:
+
+- `7e6ff95` (Chunk 16b) changed six of the eight `PostfitExtractor`
+  accessors - `GetNbins`, `GetNpars`, `GetNdof`, `GetH1Chi2`,
+  `GetH1Postfit`, `GetH1Residuals` - from `next(iter(dict))` to
+  `next(iter(dict.values()))`, so a no-argument call returns the value
+  rather than the channel-name key.
+- `d54e89a` (Chunk 16a) changed `WriteRoot(dirPerCategory=False)`'s
+  three `.values()[-1]` expressions to `list(...values())[-1]`, turning
+  a Python-3 `TypeError` into a working branch.
+
+Both are public-facing, both were deliberate, and
+`doc/TIER3_SYSTEM.md` did not mention Chunks 16a or 16b anywhere - so
+the document claimed total preservation while omitting the two changes
+that broke it.
+
+### What changed
+
+- The opening sentence now scopes the preservation claim to the
+  extraction chunks and points at the two bug-fix chunks.
+- The Purpose statement now states the real policy: an extraction chunk
+  never changes what the code computes and preserves existing quirks
+  verbatim; behavior may change only in a separate chunk identified as
+  a bug fix that does no extraction of its own. It also names the
+  invariant that *does* hold absolutely - guardrail 1's "no scientific
+  change", proved by the Tier 1 gates - so the qualified claim is not
+  read as a licence to change anything.
+- A new "Deliberate behavior changes" section records both fixes: what
+  each changed, why neither altered a production call path
+  (`run_fit.py` always passes `channelname`, and always passes
+  `dirPerCategory=True`), and that Chunk 16's characterization tests
+  pinned both behaviors before either was fixed.
+- The `ExtractPostfitFromWS.py` module-map row now points at that
+  section, since the accessor list is where a reader looks up what
+  those methods do.
+
+### Generalised to the class
+
+Every document was swept for the same absolute wording
+(`preserved exactly`, `never chang`, `no behavior change`,
+`behavior-preserving`, `purely structural`, `identical behavior`,
+`unchanged behavior`, and others). `doc/TIER3_SYSTEM.md` lines 6 and 14
+were the only *global* claims. Every other hit is correctly scoped to
+one named quirk - `getChi2`'s external mutation, `run_templates.py`'s
+`nPars` chain, `FindBHWindow.py`'s hardcoded scan parameters,
+`plot_postfit()`'s public signature - and each remains true.
+`doc/TIER3_COMPLETION_PLAN.md`'s own guardrail 1 is "no scientific
+change", not "no behavior change", so the plan never made the claim the
+system document did; the two now agree.
+
+### Verification performed
+
+- `tests/test_repo_utils.py -k documented`: 3 passed - the
+  figure-consistency tests still hold, the new section having added no
+  figure claim of its own.
+- `python scripts/quality_check.py --mode full`: 230 collected, 210
+  passed, 20 deselected, Ruff clean, Black clean (39 files), exit
+  code 0.
+- CI for `4aded75`: fork "Complete lightweight and scientific test
+  suite" **success**; upstream PR 19 lightweight gate **success**.
+- `grep -nE '[[:blank:]]+$'` and `git diff --check`: clean.
+
+### Noted, not changed
+
+- The Known-limitations entry for `_build_bkgonly_variant`'s
+  misdirected `Scale` call describes it as a "dormant" bug. That may be
+  inaccurate: the call executes on every run, and whether it is inert
+  depends on whether `hpdf.Scale(...)` raises on an already-consumed
+  histogram and is swallowed by the bare `except`. Determining which
+  needs a real-ROOT probe and a judgement about intended scaling, so it
+  is recorded here as an open question rather than silently reworded.
+  The new section deliberately avoids repeating the word.
+
+### Remaining open chunks
+
+None.
+
+## 2026-09-08 — Make the gate-coverage checks reject negated selectors, and correct a reachability claim (ninth Copilot review round)
+
+### Objective
+
+Copilot's ninth review raised one inline finding on
+`doc/TIER3_SYSTEM.md` and three suppressed findings on
+`tests/test_repo_utils.py`, all variants of one question: does a check
+that *names* something prove that the thing runs?
+
+### The reachability claim was wrong
+
+The "Deliberate behavior changes" section written in the previous entry
+said `WriteRoot(dirPerCategory=False)` "was unreachable in production".
+That is false, and it was this session's own wording:
+
+- `python/run_nloFit.py:123` calls `WriteRoot(postfitfile)` with no
+  flag, taking the default `False` (Copilot's finding).
+- This module's own CLI also defaults to `False` -
+  `--dirpercategory` is `store_true` and is passed through at
+  `python/ExtractPostfitFromWS.py:628` (found by checking every
+  `WriteRoot` call site rather than only the one cited).
+- `python/pfe.py:42` passes `True`, so it is unaffected.
+- `python/run_fit.py:166` still carries the no-flag call commented out
+  with the note "this looks problematic" - consistent with it having
+  crashed for someone.
+
+The bullet now scopes the claim to the canonical `run_fit.py` path,
+states plainly that the branch is not unreachable repository-wide, and
+names both callers the fix repairs.
+
+The neighbouring Chunk 16b bullet was checked for the same defect and
+its claim held, but its wording was narrower than the evidence: no
+non-test caller anywhere in the repository calls any of the six changed
+accessors, and `run_nloFit.py:122`'s no-argument `GetPval()` is one of
+the two that were always correct. Restated repo-wide.
+
+### Two of the three selector findings were real
+
+Each was sabotaged against the real files before anything changed:
+
+- **Real.** Negating the runtime-readiness selector to
+  `-k "not authoritative_setup_provides_scientific_runtime"` left both
+  gate-coverage tests passing. The fingerprint was a bare substring,
+  which `not <name>` contains.
+- **Real.** Negating the plotting gate's filter to
+  `-m "not requires_analysis_dependencies"` also left them passing: every
+  filename was still present while none of the marked tests would run.
+- **False positive.** Negating the scientific marker to
+  `-m "not (integration and requires_root)"` did *not* pass - the
+  fingerprint is quote-delimited (`'"integration and requires_root"'`),
+  and the negated form puts `(` and `)` where the quotes must be, so it
+  never matched. Verified by sabotage rather than by reading, since the
+  distinction turns on two characters.
+
+### What changed
+
+- `_pytest_option_value(line, option)` reads a `-k`/`-m` value from one
+  command line. It parses only the text after the `pytest` token,
+  because `python -m pytest` carries an `-m` of its own; an earlier
+  version of this helper read that and compared every marker filter
+  against the string "pytest", which made both coverage tests fail
+  against the real, correct files.
+- `_selects_positively(value, expression)` requires the expression to
+  be present *and* the value to contain no `not`.
+  `_marker_filter_keeps()` is the same rule but treats a missing `-m`
+  as acceptable, since no filter deselects nothing.
+- `_INTEGRATION_TEST_SELECTORS` now carries the option each test is
+  selected by, not a bare substring, and both coverage loops work per
+  command line: a file counts as covered only when some pytest line
+  both names it and carries a filter that keeps the marker.
+- Any `not` disqualifies a value. That is deliberately conservative -
+  neither source uses a mixed expression such as
+  `-m "requires_analysis_dependencies and not slow"`, and the helper
+  says that if one ever legitimately does, it must be taught to parse
+  the expression rather than accept the negation.
+
+### Verification performed
+
+- Five sabotages, each restored afterwards, all confirmed passing
+  before and failing after: the `-k` and `-m` negations in
+  `scripts/run_all_gates.sh`, the same two in
+  `.github/workflows/scientific-analysis.yml`, and the parenthesised
+  marker negation.
+- `test_pytest_selectors_are_read_positively_and_reject_negation` pins
+  all of them, including the `python -m pytest` collision.
+- `python scripts/quality_check.py --mode full`: 231 collected, 211
+  passed, 20 deselected, Ruff clean, Black clean (39 files), exit
+  code 0.
+- The live-collection test caught the documented figures going stale
+  when the new test was added, exactly as intended - it failed with
+  "the documented lightweight gate figure '230 collected' does not
+  match a real collection, which reports 231". Documented lightweight
+  (231/211/20) and prepared-dependency (27/2/25) figures updated
+  accordingly.
+- `grep -nE '[[:blank:]]+$'` and `git diff --check`: clean.
+
+### Remaining open chunks
+
+None.
+
+## 2026-09-08 — Apply the positive-selection rule to every remaining policy check of the same shape
+
+### Objective
+
+Round 9 established a rule for this repository's policy tests: parse the
+structure, require positive selection, and never treat the presence of
+a name as proof that the thing runs. This pass audited every remaining
+content-membership assertion in `tests/test_repo_utils.py` against that
+rule, rather than waiting for a review round to find the next instance.
+
+### What the audit found
+
+Four real defects, each confirmed by sabotage before anything changed,
+in checks no review round had reached:
+
+- **The pre-commit hook's scientific gate could be deselected.**
+  Appending `-k "not test_authoritative_j100_j50_workflows_match_frozen_reference"`
+  beside the correct `-m "integration and requires_root"` left
+  `test_git_hook_pre_commit_gate_matches_authoritative_commands`
+  passing. This is round 9's exact defect, in the test guarding the
+  repository's *mandatory local* gate.
+- **The same hook's gates could be disabled by an always-false guard.**
+  `if false && ! "$python_bin" scripts/quality_check.py --mode full;`
+  keeps every command's text in the executable lines, so the check
+  still found what it was looking for.
+- **`install.sh`'s `--check` mode was proved by its own help text.**
+  Renaming the dispatch arm to `--no-check)` left
+  `test_install_script_is_non_destructive` passing, because `--check`
+  still appears in the usage heredoc. The installer would no longer
+  accept the flag the test says it supports.
+- **Both "non-destructive" installer tests missed recursive deletes.**
+  `"rm -rf" not in active_script` is satisfied by `rm -fr`, `rm -r -f`
+  and `rm --recursive --force`, all three confirmed to pass. These are
+  the two tests whose names promise the installers destroy nothing.
+
+### What changed
+
+- `_keeps_test_selected(line, marker, test_name)`: both filters must
+  cooperate - the `-m` filter has to keep the marker, and any `-k` has
+  to name the test rather than exclude or narrow past it.
+- `_assert_no_always_false_guard()`: rejects `if/while/until false` and
+  `! true` outright. A general reachability analysis of shell is out of
+  scope and the helper says so; this catches the quickest way to
+  disable a gate while leaving its text in place.
+- `_RECURSIVE_DELETE`: matches `rm` with any recursive flag, however
+  spelled or ordered. Neither installer runs `rm` at all, so it cannot
+  misfire; a non-recursive `rm -f` of one file still passes
+  deliberately.
+- `install.sh`'s two modes are now asserted against the `case`
+  dispatch, not the whole script: `--check)`/`run_check` alongside the
+  `--build)`/`run_build` pair that was already checked there.
+- One near-vacuous assertion tightened: `"expected" in active_script`
+  matched a bare word, and is now the full `"; expected "` phrase.
+
+### A correction to this session's own record
+
+The always-false-guard finding was first reported as confirmed on the
+strength of a sabotage that was in fact a **no-op**: it replaced the
+string `python scripts/quality_check.py --mode full`, which does not
+occur in `.githooks/pre-commit` - the hook reads
+`"$python_bin" scripts/quality_check.py --mode full`. Both the before
+and after readings were therefore meaningless. The finding is real, but
+only as established afterwards by a sabotage that does apply
+(`if false && ! ...`), proved in both directions: the new guard fails
+it, and removing the guard lets it pass.
+
+### Verification performed
+
+- Six sabotages, each restored afterwards, all confirmed passing before
+  and failing after: the hook's `-k` negation; the hook's always-false
+  guard; `install.sh`'s renamed dispatch arm; and `rm -fr`,
+  `rm -r -f`, `rm --recursive --force` across both installers.
+- `test_a_named_command_is_not_a_command_that_runs` pins all of them,
+  including the benign cases the new rules must not reject.
+- `python scripts/quality_check.py --mode full`: 233 collected, 213
+  passed, 20 deselected, Ruff clean, Black clean (39 files), exit
+  code 0. Documented lightweight (233/213/20) and prepared-dependency
+  (29/2/27) figures updated, the live-collection test having caught
+  them going stale again.
+- `install.sh --check`: exit code 0, all seven gitlink and nested
+  RooFitExtensions revisions PASS, no files modified.
+- The prepared-dependency gate run for real at both this tree state and
+  `2c9a8b5`'s: 2 passed, exit 0 in each.
+- `grep -nE '[[:blank:]]+$'` and `git diff --check`: clean.
+
+### The CI failure on `2c9a8b5` was caused by that commit
+
+CI for `2c9a8b5` concluded **failure** at step 13, "Verify dependencies
+after build", and the three ROOT gates after it were skipped. The cause
+was that commit's own diff, contrary to the reasoning recorded while
+the job log was unavailable:
+
+```
+tests/test_repo_utils.py:535: in <module>
+    def _pytest_option_value(line: str, option: str) -> str | None:
+E   TypeError: unsupported operand type(s) for |: 'type' and 'NoneType'
+```
+
+Step 13's third part runs the prepared-dependency gate *after* sourcing
+`scripts/setup_buildAndFit.sh`, so it runs under the LCG runtime's
+**Python 3.9.12**, not the development venv's 3.12. A `str | None` in a
+function signature is evaluated when the `def` executes, so it raises
+there and collection dies before any test runs.
+
+The earlier inference - that the diff could not be responsible because
+it touched only tests and documentation - was wrong in its premise: the
+one file it touched is a file the scientific gates load under 3.9. It
+was also checked with the wrong interpreter. The prepared-dependency
+gate was run locally and reported 2 passed, but by way of
+`.venv/bin/python`; `scripts/run_all_gates.sh` runs that gate the same
+way, with `$python_bin`, which is why no local gate could reproduce it.
+The divergence between the two runners is recorded below.
+
+Reproduced here under the real interpreter, fixed by adding
+`from __future__ import annotations`, and confirmed: 2 passed under
+Python 3.9.12.
+
+### Guarded against recurrence
+
+Nine of the ten test files the scientific gates run already carried
+`from __future__ import annotations`; `tests/test_repo_utils.py` was the
+sole exception and had no union signatures until this work added three.
+The convention existed and was broken silently, so it is now checked:
+
+- `test_files_loaded_by_the_scientific_gates_are_importable_on_python_39`
+  parses every dependency-marked test file and every registered source
+  module, and fails when one evaluates an `X | Y` annotation at import
+  time without deferring annotations. The file set comes from the
+  markers and from `quality_check.py`'s own target lists, so it grows
+  by itself.
+- Deliberately narrow, and the test says so: it catches this one
+  incompatibility, not 3.9 compatibility in general. Syntax 3.9 cannot
+  parse at all - a `match` statement - is accepted by the 3.12 parser
+  the check runs under and would not be caught.
+- Sabotage-verified both ways: removing the future import fails the
+  **lightweight** gate, where the break is visible in seconds instead
+  of two steps into the hosted workflow, and the same sabotage was
+  confirmed to reproduce the real collection error under Python 3.9.12.
+  Adding a union signature to `python/repo_utils.py` is caught too.
+
+### Noted, not changed
+
+- The prepared-dependency gate runs under a **different interpreter** in
+  the two places that run it: `scripts/run_all_gates.sh` uses
+  `$python_bin` (the 3.12 development venv), while
+  `.github/workflows/scientific-analysis.yml` step 13 runs it after
+  sourcing the scientific setup, under Python 3.9.12. Both are
+  defensible - the tests only inspect submodule directories with Git -
+  but it means the local all-gates runner cannot reproduce a 3.9-only
+  failure in that gate, which is precisely what happened here. Making
+  them agree is a change to the gate contract and was not made
+  unilaterally.
+
+### Remaining open chunks
+
+None.
+
+## 2026-09-08 — Close two holes in the checks added yesterday: the 3.9 guard missed five annotation slots, and command parsing kept trailing comments (tenth Copilot review round)
+
+### Objective
+
+Copilot's tenth review found that two of the parsers added in the
+previous two commits could still report coverage, or Python 3.9
+compatibility, when neither held. Both findings were about checks this
+session had just written to prevent exactly that.
+
+### Finding 1 (High): the 3.9 guard inspected one slot in six
+
+`_evaluated_pep604_unions()` walked only regular and keyword-only
+arguments plus the return annotation. Every case below was then run
+under the real LCG **Python 3.9.12** before anything was changed, and
+all six raise `TypeError: unsupported operand type(s) for |`:
+
+| slot | detected before | raises on 3.9 |
+| --- | --- | --- |
+| positional-only argument | no | yes |
+| `*args` | no | yes |
+| `**kwargs` | no | yes |
+| module-level annotated assignment | no | yes |
+| class-level annotated assignment | no | yes |
+| regular argument / return | yes | yes |
+| function-local annotated assignment | no | **no** |
+
+So the guard written to stop the previous CI break would have missed
+five of the six ways to cause it. The last row is why it must not
+simply flag every union: a local annotation is never evaluated, which
+is exactly what makes this file's own `quote: str | None = None` locals
+safe, and had always been safe.
+
+The traversal now covers `posonlyargs`, `args`, `kwonlyargs`,
+`vararg`, `kwarg` and `returns`, plus `AnnAssign` at module and class
+scope, while excluding annotations inside a function body. Nested
+`def`s and classes declared inside a function are reported too: their
+annotations are evaluated when the enclosing scope runs rather than at
+import, so the break is later rather than absent.
+
+### Finding 2: a trailing comment counted as part of the command
+
+`_pytest_command_lines()` dropped whole-line comments but kept trailing
+ones, so a live command could carry the expected selector in inert
+text:
+
+```
+python -m pytest tests/test_analysis_workflows_integration.py \
+  -m "not requires_analysis_dependencies" -v \
+  # -k authoritative_setup_provides_scientific_runtime
+```
+
+The `-k` parsed out of that comment satisfied the runtime-readiness
+coverage check while the real filter selected nothing. Confirmed
+against `scripts/run_all_gates.sh` itself. The same gap existed in
+`_executable_command_lines()`, and through it in every check built on
+that extractor - the pre-commit hook's, the installers', and the CI
+workflow's, since `_workflow_run_block_lines()` feeds into it.
+
+Both extractors now apply the file's existing `_strip_inline_comment()`,
+which respects quoting: `grep "#define FOO"` and `--opt="a#b"` survive,
+while `real_command  # disabled` loses only the comment.
+
+### Finding 3: the first fix for Finding 2 stripped comments too late
+
+The eleventh review round restated Finding 2 against the pre-fix code,
+but its suggested changeset differed from the fix in one way that
+turned out to matter: it removes comments **before** joining
+backslash-continued lines, where the first fix removed them after.
+
+Six adversarial inputs were compared under both orderings, including a
+`#` that only becomes quoted once lines are joined; all six agreed. One
+case did not:
+
+```
+setup_thing  # see docs \
+python scripts/quality_check.py --mode full
+```
+
+A `\` inside a comment is not a line continuation, but stripping after
+the join treats it as one, so the comment swallowed the following line
+and the real gate command vanished - `_executable_command_lines()`
+returned only `setup_thing`, and `_pytest_command_lines()` returned
+nothing at all. That is the opposite failure to Finding 2's: a false
+*failure* rather than a false pass, and a genuine mis-parse of a
+legitimate script either way.
+
+The reviewer's ordering was adopted, via a shared `_uncommented_lines()`
+helper both extractors now use, and the whole earlier sabotage battery
+was re-run against it to confirm nothing was weakened.
+
+### Verification performed
+
+- Six sabotages, each restored afterwards, all confirmed passing before
+  and failing after: the four previously-missed annotation slots
+  injected one at a time into `python/repo_utils.py`, a real
+  trailing-comment rewrite of `scripts/run_all_gates.sh`'s
+  runtime-readiness gate, and - as a false-positive guard that must
+  keep passing - a function-local union in the same module.
+- Every slot's behaviour was established by executing it under Python
+  3.9.12, not by reading the language reference.
+- Two regression tests pin all of it, including the three safe cases
+  the check must not report (`typing.Optional`, function-local
+  annotations, no annotations at all), and both directions of the
+  comment-ordering defect.
+- The full earlier sabotage battery re-run after the reordering, each
+  restored afterwards, all six still caught: the trailing-comment
+  attack, an echo-quoted gate command, the hook's `-k` negation, the CI
+  workflow's `-m` negation, a commented-out CI gate, and `rm -fr` in
+  `install.sh`. The ordering itself was then reverted in place to
+  confirm its regression test fails without it.
+- `python scripts/quality_check.py --mode full`: 235 collected, 215
+  passed, 20 deselected, Ruff clean, Black clean (39 files), exit
+  code 0.
+- `tests/test_repo_utils.py -m "requires_analysis_dependencies"` under
+  Python 3.9.12: 2 passed. Documented lightweight (235/215/20) and
+  prepared-dependency (31/2/29) figures updated.
+- CI for `5f2d366`: **success**, with steps 13-16 all passing - the
+  three ROOT gates that were skipped on `2c9a8b5` ran and passed, which
+  confirms the previous entry's diagnosis end to end rather than
+  leaving it inferred.
+- `grep -nE '[[:blank:]]+$'` and `git diff --check`: clean.
+
+### Remaining open chunks
+
+None.
+
+## 2026-09-08 — Parse decorators instead of scanning for them (twelfth Copilot review round)
+
+### Objective
+
+Copilot's twelfth review found that `_dependency_marked_test_names()`
+drops a marked test when another decorator sits between the marker and
+the `def`, and never recognises `async def`. Both are real, and a third
+shape was found by testing the helper against every decorator layout
+rather than only the two named.
+
+### What was broken
+
+The helper scanned lines: find the marker, skip further
+`@pytest.mark.` lines, record the following `def`. Six shapes were
+tried against a synthetic file:
+
+| shape | found |
+| --- | --- |
+| bare marker | yes |
+| marker with `()` | yes |
+| stacked `@pytest.mark.*` | yes |
+| any other decorator between marker and `def` (`@mock.patch(...)`) | **no** |
+| `async def` | **no** |
+| multi-line `@pytest.mark.parametrize(...)` below the marker | **no** |
+
+The third miss is the one no review round named, and the likeliest to
+occur here: this suite parametrizes widely, and a multi-line
+`parametrize` placed below the dependency marker leaves continuation
+lines that are neither a decorator nor a `def`, so the scan gives up.
+
+The consequence is the one the review describes.
+`_assert_covers_every_dependency_marked_test()` asserts that the
+integration file's marked tests equal the selector map's keys, so a
+dropped test keeps that equality true, nothing forces a gate selector
+for it, and it would never run in any gate while every check stayed
+green.
+
+### What changed
+
+`_dependency_marked_test_names()` now parses the file and reads each
+function's `decorator_list`, via a new `_pytest_marker_names()` helper.
+Decorator order, interleaving, arguments, line breaks and `async` all
+stop mattering. `@pytest.mark.x` and `@mark.x` are both recognised.
+
+The sibling `_tests_dir_files_marked_requires_analysis_dependencies()`
+was **left as it is**, deliberately. It matches the marker name
+anywhere in the file, and its own comment already explains why: a file
+merely mentioning the marker is still required to appear in the gate
+lists, and erring that way causes a false failure, never a false pass.
+Converting it to the parser would make it exact but less conservative,
+so the inconsistency between the two helpers is intentional.
+
+### Verification performed
+
+- The parser returns **identical** results to the line scanner on all
+  21 real test files, so this widens detection without changing any
+  current behaviour.
+- Three sabotages, each restored afterwards: a marked test added to
+  `tests/test_analysis_workflows_integration.py` in each of the three
+  previously-dropped shapes. All three now fail both gate-coverage
+  tests.
+- The `@mock.patch` sabotage was also run against the committed line
+  scanner to confirm the fix is what catches it: with the old helper
+  both coverage tests **passed**, a silent all-clear for a test no gate
+  would run.
+- `test_marked_tests_are_found_whatever_decorators_surround_them` pins
+  all seven detected shapes and three that must not be reported,
+  including the marker named only inside a string. Verified
+  non-vacuous by restoring the line scanner underneath it, which fails
+  it on `other_decorator_between`.
+- `python scripts/quality_check.py --mode full`: 236 collected, 216
+  passed, 20 deselected, Ruff clean, Black clean (39 files), exit
+  code 0. Documented lightweight (236/216/20) and prepared-dependency
+  (32/2/30) figures updated.
+- `tests/test_repo_utils.py -m "requires_analysis_dependencies"` under
+  Python 3.9.12: 2 passed.
+- `grep -nE '[[:blank:]]+$'` and `git diff --check`: clean.
+
+### Remaining open chunks
+
+None.
+
+## 2026-09-08 — Validate both pytest filters per mapped test, and remove the duplicate rule that let one drift (thirteenth Copilot review round)
+
+### Objective
+
+Copilot's thirteenth review found that the integration coverage check
+proves only that the expected selector is *present*, not that the
+invocation still selects the test once every filter is combined.
+
+### Why one filter is not enough
+
+`-m` and `-k` are independent pytest filters combined with AND: a test
+runs only if it satisfies both. The check validated one option per
+mapped test - `-k` for the runtime-readiness test, `-m` for the
+scientific one - so adding the *other* filter deselects the test while
+the validated one remains exactly right:
+
+```
+python -m pytest tests/test_analysis_workflows_integration.py \
+  -k authoritative_setup_provides_scientific_runtime \
+  -m "not requires_analysis_dependencies" -v
+
+python -m pytest tests/test_analysis_workflows_integration.py \
+  -m "integration and requires_root" \
+  -k "not authoritative_j100_j50_workflows_match_frozen_reference" -v
+```
+
+Both passed, in `scripts/run_all_gates.sh` and in
+`.github/workflows/scientific-analysis.yml` - four holes. The effect is
+that the repository's headline scientific gate could be emptied while
+every policy test reported full coverage.
+
+### The cause was a duplicate rule, not a missing idea
+
+`_keeps_test_selected()` already existed in this file, already
+implemented exactly this both-halves rule, and already rejected the
+second attack. It was added three rounds earlier and wired into
+`.githooks/pre-commit`'s own check, while the gate-coverage loop kept
+the weaker single-option version. The later sweep "of every remaining
+check of that shape" audited the other tests and never re-audited the
+one it had just rewritten.
+
+So this is a different failure from the four rounds before it. Those
+were text scanning where parsing was needed - the wrong tool. Here the
+right tool was present, working, and applied to one of the two places
+that needed it.
+
+### What changed
+
+- `_invocation_runs_test(line, designated, guard)` is now the single
+  predicate: `designated` must positively select, and `guard` - the
+  other option - must not deselect, with absent counting as fine.
+- `_keeps_test_selected()` is now a thin marker-designated case of it
+  rather than a parallel implementation. The duplication was the actual
+  defect; the missing check was the symptom.
+- `_INTEGRATION_TEST_SELECTORS` carries both halves per test: the
+  readiness test's `-k` name with `-m requires_analysis_dependencies`
+  as its guard, and the scientific test's `-m` marker with its own name
+  as the guard.
+
+### Verification performed
+
+- Four sabotages, each restored afterwards, all confirmed passing
+  before and failing after: the guard filter added to the readiness and
+  scientific lines, in both the gate runner and the CI workflow.
+- `test_a_second_filter_cannot_quietly_deselect_a_mapped_test` pins
+  them, plus the cases that must keep passing - the real invocations, a
+  guard filter that *keeps* the test, and no guard at all - and that a
+  wrong designated selector still fails. Verified non-vacuous by making
+  the guard half return `True` unconditionally, which fails it.
+- `python scripts/quality_check.py --mode full`: 237 collected, 217
+  passed, 20 deselected, Ruff clean, Black clean (39 files), exit
+  code 0. Documented lightweight (237/217/20) and prepared-dependency
+  (33/2/31) figures updated.
+- `tests/test_repo_utils.py -m "requires_analysis_dependencies"` under
+  Python 3.9.12: 2 passed.
+- `grep -nE '[[:blank:]]+$'` and `git diff --check`: clean.
+
+### Remaining open chunks
+
+None.
+
+## 2026-09-08 — Read `rm`'s words instead of its shape, so an ordinary filename is no longer a recursive delete (fourteenth Copilot review round)
+
+### Objective
+
+One finding, Medium: `_RECURSIVE_DELETE`'s `-{0,2}` also accepts *no*
+dash, so the pattern read the operand as a flag. `rm report.txt` was
+reported as a recursive delete.
+
+### Independently verified, and it is worse than the one example
+
+Run against the pattern directly, four benign commands matched, not
+one: `rm report.txt`, `rm results.json`, `rm -f error.log` and
+`rm -- report.txt`. Any operand containing an `r` did it.
+
+The direction matters. Every previous finding in this class was a false
+*pass* - a check reporting coverage that did not exist. This one is a
+false *failure*: the two installer policy tests would have rejected an
+ordinary single-file cleanup as a recursive delete. So this detector is
+made precise, rather than left deliberately over-inclusive the way
+`_tests_dir_files_marked_requires_analysis_dependencies` is.
+
+It was dormant: neither installer runs `rm` at all, which is why no
+test caught it and why nothing in the repository was blocked by it.
+
+Measuring also turned up a second hole in the same pattern, in the
+opposite direction: `rm build -rf` - options after the operand, which
+`rm` itself accepts - matched neither the old pattern nor the fix
+Copilot suggested.
+
+### What changed
+
+- `_recursive_delete(text)` replaces the positional regex. It finds
+  each `rm`, takes the words up to the next shell separator, and tests
+  each word on its own with `fullmatch`. An operand is never a flag,
+  because a flag has to be a whole word starting with a dash.
+- Options after the operand are now caught, since word order stops
+  mattering.
+- `--no-preserve-root` is deliberately not recursive, despite the `r`,
+  and a later command's flags are not attributed to `rm`.
+
+### Verification performed
+
+- Both directions proved end to end on both installers, restored
+  afterwards. Against the old code: appending a benign `rm report.txt`
+  failed both installer tests (the reported defect, reproduced), while
+  `rm build -rf` passed both (the second hole). Against the fix: the
+  benign lines pass, `rm build -rf` and `rm -rf build` both fail with
+  the offending command quoted.
+- The regression cases in
+  `test_a_named_command_is_not_a_command_that_runs` were verified
+  non-vacuous by three separate sabotages of the detector, each failing
+  it: returning `None` always, allowing zero dashes again, and dropping
+  the argument-list boundary. The first attempt at the benign cases did
+  *not* catch the zero-dash sabotage - word-wise `fullmatch` rejects
+  `report.txt` for its dot regardless - so `rm report`, an
+  extensionless operand, was added as the case that actually pins the
+  dash requirement.
+- Swept every other compiled pattern in the file for the same shape.
+  This was the only one that parses command options; the rest match
+  commands, comments, decorators or reported figures, none of which
+  read an operand as a flag.
+- `python scripts/quality_check.py --mode full`: 237 collected, 217
+  passed, 20 deselected, Ruff clean, Black clean (39 files), exit
+  code 0. No test was added or removed, so the documented figures are
+  unchanged.
+- `tests/test_repo_utils.py -m "requires_analysis_dependencies"` under
+  Python 3.9.12: 2 passed.
+- `grep -nE '[[:blank:]]+$'` and `git diff --check`: clean.
+
+### Remaining open chunks
+
+None.
+
+## 2026-09-09 — Evaluate pytest's filter expressions instead of pattern-matching them, and check every marked test rather than every file (fifteenth Copilot review round)
+
+### Objective
+
+Three suppressed findings, all in the gate-coverage checks, all real:
+
+1. the always-false-guard check was applied to `.githooks/pre-commit`
+   only, never to the two gate sources these checks read;
+2. the file-level check validated only the `-m` filter, so a `-k` could
+   drop most of a file's marked tests while the file was still named;
+3. `_selects_positively()` accepted an unsatisfiable expression -
+   `<name> and nonexistent` contains the name and carries no `not`.
+
+### Independently verified, all three, before changing anything
+
+Finding 3 against real pytest: `-k "authoritative_setup_provides_
+scientific_runtime and nonexistent"` collected **0 of 3** tests, and
+`-m "integration and requires_root and nonexistent_marker"` collected
+0 of 3, while the predicate returned True for both.
+
+Finding 1 by sabotage: the whole scientific gate wrapped in a multiline
+`if false; then ... fi` - valid shell, confirmed with `bash -n` - left
+both gate-coverage tests passing.
+
+Finding 2 by measurement, and it was the worst of the three: adding one
+`-k <test name>` to the plotting gate took it from **48 dependency-
+marked tests to 1**, with every filename still present and the marker
+filter still keeping the marker. Both tests passed.
+
+### The root cause was approximating a language instead of evaluating it
+
+`-k` and `-m` are boolean expressions, and pytest combines them with
+AND. Three successive rounds each replaced one approximation with a
+slightly better one:
+
+- substring membership - broken by `not <expression>`;
+- substring plus "reject any `not`" - broken by
+  `<expression> and nonexistent`;
+- and each fix was written to defeat the specific example given.
+
+So the expressions are now parsed and evaluated against the mapped
+test's real name and markers. Negation, extra conjunctions, `or`,
+parentheses and mixed expressions are all handled by construction
+rather than by rule. A side effect worth naming: the previous rule
+rejected a legitimate `-m "requires_analysis_dependencies and not
+slow"`, which was documented as deliberately conservative. Evaluating
+gets that right too.
+
+### What changed
+
+- `_expression_selects(expression, is_true)` evaluates one `-k`/`-m`
+  expression over `and`/`or`/`not`/parentheses. Anything unparseable,
+  or any other construct, returns False - unproven counts as not
+  selected, so the check fails loudly rather than accepting what it did
+  not understand.
+- `_filters_keep_test()` always judges both options.
+  `_invocation_runs_test()` adds the one policy requirement on top: the
+  designated option must be present, so a gate selects its test
+  deliberately rather than merely failing to exclude it.
+- `_selects_positively()`, `_marker_filter_keeps()` and
+  `_keeps_test_selected()` are gone. They were three spellings of the
+  same approximation, and the duplication is what let one of them drift
+  a round behind the others.
+- `_dependency_marked_tests()` reads each marked test's real markers
+  from the AST, so `_INTEGRATION_TEST_SELECTORS`' restated expressions
+  are gone too - the map now records only which option selects which
+  test.
+- The file-level loop became a per-test loop: every dependency-marked
+  test is checked against the invocations that name its file. Files are
+  still enumerated by the over-inclusive text scan, and a flagged file
+  with no AST-visible marked test still gets the file-level check, so
+  that net is not lost.
+- `_assert_no_always_false_guard()` now runs on both gate sources.
+
+### Verification performed
+
+- Four end-to-end sabotages of the real gate sources, each restored:
+  the `if false` wrapper, the narrowing `-k`, and the unsatisfiable
+  extra term in both `scripts/run_all_gates.sh` and
+  `.github/workflows/scientific-analysis.yml`. All four previously
+  passed; all four now fail, each on the correct source.
+- Each of the three fixes was individually reverted to its exact
+  previous rule and confirmed to fail a committed test:
+  `test_gate_coverage_rejects_a_disabled_or_narrowed_gate` for the
+  first two, `test_pytest_filters_are_evaluated_against_the_real_test`
+  and `test_a_second_filter_cannot_quietly_deselect_a_mapped_test` for
+  the third. The first attempt at the second revert was not faithful -
+  it went through the new code path and still raised - so it was redone
+  as the actual `-m`-only rule.
+- The new tests were also run under the LCG Python 3.9.12, not just
+  collected there: 6 passed.
+- `python scripts/quality_check.py --mode full`: 238 collected, 218
+  passed, 20 deselected, Ruff clean, Black clean (39 files), exit
+  code 0. Documented lightweight (238/218/20) and prepared-dependency
+  (34/2/32) figures updated.
+- `grep -nE '[[:blank:]]+$'` and `git diff --check`: clean.
+
+### Remaining open chunks
+
+None.
+
+## 2026-09-09 — Close every remaining way to empty a gate without changing its command: --deselect, --collect-only, a workflow condition, an environment override, an addopts override, and the installer text views
+
+### Objective
+
+The previous round fixed the two pytest expression filters on the
+stated premise that `-k` and `-m` are what decide whether a test runs.
+Asked to sweep all 34 policy tests for anything of the same class, that
+premise turned out to be incomplete. Six more vectors were found, each
+confirmed by sabotage and measurement, each leaving every pytest
+command on the page untouched.
+
+### Correction to the previous entry
+
+That entry called all three of its findings cases where the gate ran
+nothing. Measured afterwards: an unsatisfiable extra term makes pytest
+collect nothing and exit **5**, and both `run_gate` and the CI step
+check the exit status, so that one would have failed loudly the first
+time it ran. It was a false pass in the *check*, not a silent hole in
+the gate. The other two exit 0 and were silent.
+
+### What was found, and how it was measured
+
+1. **`--deselect`** - a third filter, independent of both expressions,
+   whose whole purpose is to remove a named test. One `--deselect` took
+   the plotting gate from 18 dependency-marked tests to 17; pointed at
+   a file, to 16. Exit 0. Both coverage tests passed.
+2. **`--collect-only`** (and `--co`) - collects everything, runs none
+   of it, exits 0. The only veto that leaves no trace in the gate's own
+   result.
+3. **A workflow condition** - `if: false` on the scientific gate step
+   skipped it entirely and left all three CI policy tests passing. This
+   is the YAML twin of the shell `if false; then ... fi` that the
+   previous round *did* fix; the fix only ever covered shell, and the
+   CI text is reduced to `run:` block contents before the guard check
+   sees it, so `if:` is invisible there by construction.
+4. **`PYTEST_ADDOPTS`** - pytest applies it to every invocation, so one
+   line in a gate source filters every gate in it. A 5-test file went
+   to 0 selected.
+5. **pytest's `addopts` config** - applies repository-wide.
+   `-k nothing_matches_this` empties a gate *even though the gate
+   passes its own `-m`*, because the two options are independent and
+   both apply. An `addopts` `-m` is overridden by a command-line `-m`,
+   so that spelling alone cannot empty these gates.
+6. **The two installer tests** - about sixty "the script does X"
+   assertions against text with only whole-line comments removed: no
+   trailing-comment handling, no echo filtering, no guard check. That
+   is the state the gate checks were in five rounds ago. Three valid-
+   shell sabotages passed: both real `cmake --build` calls replaced by
+   `true # cmake --build --parallel`, the same replaced by
+   `echo "cmake --build --parallel"`, and `run_build()`'s entire body
+   wrapped in `if false`.
+
+Two candidates were tested and rejected rather than fixed:
+`--ignore=<file>` has no effect when the file is named explicitly on
+the command line, which it always is in these gates (18 tests before,
+18 after); and an `addopts` `-m`, as above.
+
+### What changed
+
+- `_filters_keep_test()` now judges every mechanism that can drop a
+  test, not the two it happened to know first: both expressions,
+  `--deselect`, and `--collect-only`. It also refuses a short option
+  glued to its value (`-knothing`), which it cannot parse - unparseable
+  counts as unproven, because "absent" means "filters nothing" and
+  would be the wrong answer.
+- `_pytest_option_values()` reads *every* occurrence of an option and
+  both the `--option value` and `--option=value` spellings.
+  `--deselect` is repeatable, and reading only the first was enough
+  only while nothing repeated.
+- `_deselects_test()` matches loosely on the path - any path ending in
+  the test's own file, or the tests directory - so an unfamiliar
+  spelling causes a false failure rather than a false pass.
+- `test_no_gate_source_can_be_disabled_or_globally_filtered()` rejects
+  any workflow condition, `PYTEST_ADDOPTS` in any gate source, and any
+  selection-affecting `addopts`. Conditions are rejected outright
+  rather than evaluated: a computed condition cannot be decided here,
+  and evaluating GitHub's expression language is as out of scope as
+  shell reachability analysis. No workflow uses `if:` at all, so this
+  costs nothing today and fails loudly if one is added.
+- `selection_affecting_addopts()` lives in `python/repo_utils.py`, and
+  `scripts/quality_check.py` applies it **before** starting pytest.
+  This is the one case a test cannot cover: `addopts =
+  "--collect-only"` makes the policy file itself collect and not run,
+  so the assertion would never execute. The gate has to refuse first.
+  One rule, two callers - duplicating it is what let the filter checks
+  drift a round apart.
+- `_installer_views()` gives both installer tests one hardened set of
+  views (comments stripped whole-line and trailing; a commands view
+  with echoes and heredocs dropped; an invocations view without
+  function definitions) and rejects an always-false guard once for
+  both. Seven claims that are about commands moved onto the commands
+  view; claims about messages the installer prints stay on the text
+  view, which is why echoes are not dropped there.
+
+### Verification performed
+
+- Every vector sabotaged against the real file and restored: six
+  spellings of the pytest vetoes in `scripts/run_all_gates.sh`
+  (`--collect-only`, `--co`, `--deselect` by node id, by file, with
+  `=`, and `-knothing`), `if: false` and a `PYTEST_ADDOPTS` env block
+  in the CI workflow, an exported `PYTEST_ADDOPTS` in the gate script,
+  three `addopts` values in `pyproject.toml`, and three sabotages of
+  `install.sh`. All passed before; all fail now.
+- Each fix individually reverted to its previous behaviour and
+  confirmed to fail a committed test - the deselect check, the
+  collect-only check, the multi-value option reader, the YAML
+  condition pattern, the `PYTEST_ADDOPTS` pattern, the addopts
+  unquoting, and the installer views.
+- Two vacuity traps found and closed while doing that. The workflow and
+  addopts checks read the repository's own files, which are clean, so
+  they passed with their detectors neutered; the installer wiring had
+  the same problem. `test_the_disabling_detectors_actually_detect()`
+  and `test_the_installer_views_reject_text_that_never_runs()` pin them
+  on synthetic input instead. Both were confirmed to fail when the
+  thing they pin is reverted.
+- One of my own bugs, found by measuring rather than reading: the
+  addopts check reported nothing on a real `addopts = "-k nothing"`,
+  because the option boundary was blocked by the opening quote. The
+  value is unquoted first now.
+- `python scripts/quality_check.py --mode full`: 242 collected, 222
+  passed, 20 deselected, Ruff clean, Black clean (39 files), exit
+  code 0. Documented lightweight (242/222/20) and prepared-dependency
+  (38/2/36) figures updated.
+- The new tests were run, not just collected, under the LCG Python
+  3.9.12: 7 passed.
+- `grep -nE '[[:blank:]]+$'` and `git diff --check`: clean.
+
+### Remaining open chunks
+
+None.
+
+## 2026-09-09 — Reject a node id in place of a filename, the one half of Copilot's "node selectors" that the previous commit missed
+
+### Objective
+
+Re-reading the fifteenth review's own words against what was actually
+implemented. Its second finding asked for `-k` "and node selectors" to
+be validated. The previous commit implemented the `--deselect`
+spelling and treated the finding as closed. It is not the only
+spelling.
+
+### The gap, measured
+
+A pytest argument can name a single test instead of a file:
+
+```
+tests/test_pre_fit.py::test_fit_raises_indexerror_for_npars_above_seven_with_default_ranges
+```
+
+That took `tests/test_pre_fit.py` from two dependency-marked tests to
+one. Both coverage tests passed. This one is invisible to the previous
+checks by construction: they pick the lines to examine by looking for
+the filename, and a node id *contains* the filename.
+
+### What changed
+
+- `_selects_whole_file()` requires a real positional reference to the
+  test's file, and when every reference is a node id, the mapped test
+  has to be one of the tests named. Class-qualified node ids count, and
+  a bare filename alongside a node id still selects the whole file.
+- `_pytest_positional_arguments()` skips the values of options that
+  consume the following word, so the file named inside `--deselect
+  tests/x.py` or `--ignore tests/x.py` is no longer read as the
+  invocation *selecting* that file. A line that mentions the file only
+  in an option value now correctly counts as not running it.
+
+### Verification performed
+
+- The node-id narrowing sabotaged into the real `run_all_gates.sh`:
+  passed before, fails now.
+- The whole earlier battery re-run against the real script to confirm
+  nothing regressed - `--collect-only`, `--co`, `--deselect` by file
+  and by node id (both spellings), `-knothing`, a narrowing `-k`, an
+  unsatisfiable `-m` term, and a negated `-m`. Nine attacks, nine
+  failures, baseline clean.
+- Both new behaviours reverted individually and confirmed to fail a
+  committed test. The first attempt at pinning the option-value
+  skipping did not: the `--deselect` case it used is caught by the
+  deselect check as well, so it passed with the skipping removed.
+  `--ignore` isolates it, and that case is what pins it now.
+- `python scripts/quality_check.py --mode full`: 242 collected, 222
+  passed, 20 deselected, Ruff clean, Black clean (39 files), exit
+  code 0. No test added or removed, so the documented figures are
+  unchanged.
+- Under the LCG Python 3.9.12: 2 passed for the extended tests, 2
+  passed for the prepared-dependency gate.
+- `grep -nE '[[:blank:]]+$'` and `git diff --check`: clean.
+
+### Remaining open chunks
+
+None.
+
+## 2026-09-09 — Sweep for the same class one level further out: a file no gate runs at all
+
+### Objective
+
+Asked to look for further cases of the class, with the lens moved from
+"a gate that selects nothing" to "a file no gate reaches". Two surfaces
+had it; three candidates were examined and cleared.
+
+### What was found, and measured
+
+**A test file nothing runs.** `scripts/quality_check.py` lists its
+targets by hand. A new `tests/test_zz_unregistered_probe.py` whose only
+test was `assert False` left the lightweight gate green - 242
+collected, 222 passed, all checks passed - and every policy test in
+`tests/test_repo_utils.py` passing. It is not run, and it is not linted
+or formatted either, since Ruff and Black take the same list. This is
+the gate-coverage class one level out: those checks prove a registered
+file's tests are selected; nothing proved the file reaches a gate.
+
+**A Python module the 3.9 check never sees.** That check read the
+dependency-marked test files - self-maintaining - plus the *registered*
+`python_targets`. So a new module on the hot path escaped it until
+someone remembered to register it, which is the same hand-maintained
+weakness. Measured before widening: across all 51 `python/*.py` and
+every `scripts/*.py`, there are zero PEP 604 offenders, so widening to
+every source file costs nothing today.
+
+### Examined and cleared, rather than "fixed"
+
+- `assert_analysis_reference_close()` - the scientific gate's own
+  comparison. It compares workflow-name sets both ways, fit-parameter
+  name sets both ways, provenance exactly, `None` p-value *presence*
+  symmetrically with `is not`, and the limit points exactly. There is
+  no vacuous path through it. The empty `cls_limit_points` in the
+  frozen reference is a real property of a run with limits disabled,
+  not a comparison that skips.
+- `test_repo_snapshot_matches_frozen_reference()` - an empty snapshot
+  would raise `KeyError` on the three explicit `is True` assertions
+  rather than compare equal.
+- `scripts/compare_root_outputs.py` - would report no differences if
+  handed no object paths, but no gate or script invokes it (only its
+  own unit test), and `doc/TIER1_SYSTEM.md:245` already states it does
+  not inventory every object. A manual tool, not a gate.
+- No `conftest.py`, no `collect_ignore`, no `norecursedirs`, and no
+  test file whose name pytest would skip.
+
+### What changed
+
+- `test_every_test_file_is_registered_with_a_gate()`: every
+  `tests/test_*.py` must be registered, or named in
+  `_TEST_FILES_RUN_BY_ANOTHER_GATE` - and an exemption has to point at
+  a real gate invocation, read from `scripts/run_all_gates.sh` with the
+  same positional-argument reader the coverage checks use, so the
+  exemption list cannot become a place to park a file nothing runs.
+  Stale registrations are rejected too.
+- The 3.9 check now reads every `python/*.py` and `scripts/*.py`, not
+  just the registered ones. The 18 legacy Python-2-era modules that a
+  Python 3 AST cannot parse at all are named in
+  `_UNPARSEABLE_LEGACY_MODULES` rather than skipped silently, so a
+  *new* unparseable file fails the check instead of disappearing from
+  it. The assertion is a subset test, so fixing a legacy file simply
+  starts it being checked.
+
+### Verification performed
+
+- Registration check, four sabotages, all caught: a new unregistered
+  test file; a registered target renamed out of existence; an exemption
+  for a file no gate runs; and the gate script no longer naming the
+  exempted file.
+- Widened 3.9 check, four sabotages: an unregistered `python/` module
+  and an unregistered `scripts/` module with a 3.9-fatal signature both
+  caught, a new unparseable file caught, and - the negative control -
+  the same module with `from __future__ import annotations` correctly
+  passing.
+- `python scripts/quality_check.py --mode full`: 243 collected, 223
+  passed, 20 deselected, Ruff clean, Black clean (39 files), exit
+  code 0. Documented lightweight (243/223/20) and prepared-dependency
+  (39/2/37) figures updated.
+- Under the LCG Python 3.9.12: 2 passed for the prepared-dependency
+  gate, and the two new/widened checks run there too. Parsing the
+  legacy modules warns about invalid escape sequences - SyntaxWarning
+  on 3.12, DeprecationWarning on 3.9.12 - so both are silenced inside
+  the check rather than left to clutter the gate output.
+- `grep -nE '[[:blank:]]+$'` and `git diff --check`: clean.
+
+### Remaining open chunks
+
+None.
+
+## 2026-09-09 — Parse pytest's addopts as TOML instead of reading one line of it (sixteenth Copilot review round)
+
+### Objective
+
+Four findings against 09f56ae, all in code added the same day, all
+real: the `addopts` guard missed three forms pytest accepts, missed the
+attached short-option spelling it already recognised elsewhere, and two
+`doc/TIER3_SYSTEM.md` claims about `python/repo_utils.py` went stale in
+the same PR that made them stale.
+
+### The first finding is the most serious one of the whole PR
+
+`addopts = ["--collect-only"]` - the TOML array form - made
+`selection_affecting_addopts()` return nothing, so
+`scripts/quality_check.py` ran pytest anyway. Measured on the real
+gate:
+
+```
+collected 243 items / 20 deselected / 223 selected
+=============== 223/243 tests collected (20 deselected) in 0.39s ===============
+All checks passed!
+exit code 0
+```
+
+Not one test executed, and the gate reported success. Every previous
+false pass in this PR was a policy check reporting coverage that did
+not exist; this one was the gate itself reporting a pass it had not
+earned. The guard written specifically to prevent it had a hole because
+it read one physical line and stripped the outer quote characters.
+
+The multiline-string form and an array split across lines were missed
+the same way. `addopts = "-knothing"` and `addopts = ["-k", "nothing"]`
+were also missed; both deselect everything, though those exit 5, which
+the runners already catch.
+
+The second finding is pointed: `_GLUED_SHORT_OPTION` was added to
+`tests/test_repo_utils.py` earlier the same day for exactly the
+attached-value spelling, and the shared function did not know about it.
+Two places reasoning about pytest options, one of them taught.
+
+### What changed
+
+- `pytest_addopts_words()` reads the setting with a real TOML parser -
+  `tomllib` on 3.11+, `tomli` on the LCG runtime's 3.9.12 - and handles
+  the string, array and multiline forms because the parser does. If
+  neither parser exists it raises, because "no parser" must not read as
+  "no offending options".
+- `_selection_option()` recognises a value attached to a short option,
+  and treats an unambiguous `--` prefix as the option it resolves to,
+  since argparse does (`--co` and `--col` are `--collect-only`).
+  `--color` is unaffected: no selecting option starts with it.
+- `doc/TIER3_SYSTEM.md`'s module inventory now says five functions, not
+  four, and names `selection_affecting_addopts()` with why it is
+  shared; the test-file map row records its coverage.
+
+### Two of my own mistakes, both caught by the checks added yesterday
+
+- The new `_selection_option(word: str) -> str | None` signature broke
+  Python 3.9 compatibility. `test_files_loaded_by_the_scientific_gates_
+  are_importable_on_python_39` - widened to every source file in the
+  previous commit, specifically so an unregistered module could not
+  escape it - failed on `python/repo_utils.py:135` immediately.
+  `from __future__ import annotations` added. Without that widening
+  this would have reached CI, as the same mistake did once before.
+- Replacing a block of the test file by its start and end markers
+  deleted `test_every_test_file_is_registered_with_a_gate()` along with
+  it. `test_documented_gate_counts_match_a_real_collection` caught it
+  within seconds: 242 collected against 243 documented. Restored from
+  the committed version.
+
+Neither would have been noticed by reading the diff.
+
+### Verification performed
+
+- Every form applied to the real `pyproject.toml` in turn, gate run
+  each time: the array, the attached short option, the split array and
+  the multiline string are now all refused with exit code 2 and the
+  offending option named. Control run with a clean file passes.
+- `python/repo_utils.py` exercised under the LCG Python 3.9.12, which
+  takes the `tomli` branch: identical answers for the clean file, the
+  array form and the attached short option.
+- Both new behaviours reverted individually - the TOML parse back to
+  the one-line reader, and the attached-value matching back to
+  whole-word equality - each confirmed to fail
+  `test_the_disabling_detectors_actually_detect`.
+- `python scripts/quality_check.py --mode full`: 243 collected, 223
+  passed, 20 deselected, Ruff clean, Black clean (39 files), exit
+  code 0. Documented figures already correct, so unchanged.
+- `grep -nE '[[:blank:]]+$'` and `git diff --check`: clean.
+
+### Remaining open chunks
+
+None.
+
+## 2026-09-09 — Audit of every Copilot finding as a class against the unreviewed fixes: four more instances, three of them in code added today
+
+### Objective
+
+Asked to evaluate all changes against Copilot's comments - not only
+that each reported issue is fixed, but whether the same classes have
+recurred in the fixes themselves. The last six commits have not been
+reviewed, and they are where new instances would be. Each of the
+recurring classes was turned into a hypothesis and measured.
+
+### Found, measured, fixed
+
+1. **A repeated filter takes the *last* value, and the reader took the
+   first.** `-k` and `-m` use argparse's `store` action, so
+   `-m "requires_analysis_dependencies" -m requires_root` applies the
+   second. Measured on the plotting gate: 16 dependency-marked tests
+   became 15, **exit code 0**, and both coverage tests passed. Silent.
+   `--deselect` is an `append` action, where every occurrence counts,
+   which is why `_deselects_test()` reads all of them - the two
+   semantics now have one comment each explaining which applies.
+2. **A short option bundled behind another flag.** pytest applies
+   `-vk nothing` as `-v` plus `-k nothing`, and the readers saw no `-k`
+   at all, which they reported as "no filter" - the opposite of the
+   truth. Measured: `-vk <one test name>` took the plotting gate from
+   16 marked tests to **1**, exit code 0, coverage tests passing.
+   Worse than the `-knothing` form fixed this morning, which at least
+   collected nothing and exited 5.
+3. **A gate command inside a shell function nothing calls.** Wrapping
+   the whole plotting gate in `never_called() { ... }` is valid shell
+   (`bash -n` clean), runs nothing, leaves `failures` at zero so the
+   script prints "All gates passed", and left both coverage tests
+   passing. The installer checks had dropped function *definition*
+   lines for this reason since two rounds ago; the gate-coverage
+   checks never dropped the *body*.
+4. **`-p no:python`** collects nothing at all. It exits 4, so a runner
+   catches it, but the coverage checks reported the gate covered.
+
+### Tested and rejected, rather than "fixed"
+
+- `--lf --lfnf none` - no effect on these gates (16 tests before, 16
+  after).
+- The YAML `run:` block reader, against every block scalar form pytest
+  workflows can use - `|`, `|-`, `|+`, `>`, `>-` and the inline form.
+  All six extract correctly; there is no missed spelling here.
+- `assert_analysis_reference_close()`, the repo-snapshot comparison and
+  `scripts/compare_root_outputs.py` were cleared in the previous
+  sweep and are unchanged since.
+
+### What changed
+
+- `_pytest_option_value()` returns the **last** occurrence, with the
+  store-versus-append distinction stated where it matters.
+- `_unreadable_short_option()` replaces `_GLUED_SHORT_OPTION`. Rather
+  than enumerating the ways a bundle can hide a filter, only the forms
+  this reader can actually interpret are accepted: a bare `-k`/`-m`
+  with its value next, `-k=`/`-m=`, and bundles made entirely of
+  selection-neutral letters (`vqsxl`). Everything else is unreadable,
+  and unreadable counts as unproven. The real gate sources use only
+  `-v`, `-k` and `-m` - confirmed by reading every pytest command in
+  all four of them - so the whitelist costs nothing today and a new
+  short option fails loudly until someone considers it.
+- `_outside_function_bodies()` drops lines inside a shell function
+  body, so a gate command has to sit at top level. `run_gate` is still
+  fine: every pytest command is passed to it as an argument from top
+  level, not written inside its body.
+
+### A rule of mine that never fired, removed
+
+`_DISABLED_PLUGIN` was written for `-p no:` and then deleted:
+`_unreadable_short_option()` already rejects `-p`, because `p` is not
+a neutral letter. Reverting the plugin rule failed no test, which is
+how it was noticed. Two rules over the same ground is precisely what
+let these checks drift apart in round 13, so the redundant one is gone
+and the reason is recorded where the surviving one is defined.
+
+### Two mistakes of my own this round
+
+- A wrong assertion, not a wrong fix: `assert not keeps("-m requires_root")`
+  failed because the test used in that case really does carry
+  `requires_root`, so the last `-m` legitimately keeps it. Changed to
+  `-m integration`, a real marker that test does not carry.
+- Deleting the redundant rule by index range swallowed five unrelated
+  helpers, and Ruff caught it immediately with three undefined names.
+  Restored and redone with exact anchors. This is the second time a
+  range-based edit has cut too much; anchors only from here.
+
+### Verification performed
+
+- Ten sabotages against the real `scripts/run_all_gates.sh`, each
+  restored: `-m nothing`, a narrowing `-m`, `-vk nothing`, `-vk <real
+  test>`, `-knothing`, `-p no:python`, `-p=no:python`,
+  `--collect-only`, `--deselect <file>`, and - the negative control - a
+  plain `-v`, which must still pass. Nine fail, the control passes.
+- The uncalled-function sabotage on the real gate script: passed
+  before, fails now, and the real sources still yield all five pytest
+  command lines (four in the script, one in the hook).
+- Each fix reverted individually and confirmed to fail a committed
+  test: last-occurrence reading, the unreadable-short-option rule, and
+  function-body dropping.
+- `python scripts/quality_check.py --mode full`: 244 collected, 224
+  passed, 20 deselected, Ruff clean, Black clean (39 files), exit
+  code 0. Documented lightweight (244/224/20) and prepared-dependency
+  (40/2/38) figures updated.
+- Under the LCG Python 3.9.12: 2 passed for the prepared-dependency
+  gate, 3 passed for the new and extended checks.
+- `grep -nE '[[:blank:]]+$'` and `git diff --check`: clean.
+
+### Remaining open chunks
+
+None.
+
+## 2026-09-09 — Second audit pass against Copilot's comments: the gate can read the wrong pytest config file, and three more shell forms hide a command
+
+Re-pulled all thirteen Copilot reviews and twenty-six inline comments
+from the GitHub API rather than working from the earlier verdicts. The
+last review (11:51 UTC) reviewed `09f56ae`; `e562019` and `c51c881`
+came after it, so this pass audited those two commits against the
+comment classes instead of waiting for a review of them. All
+forty-four earlier findings are still fixed. Three new instances were
+found, all in code committed earlier today, plus one factually wrong
+comment.
+
+### 1. `_outside_function_bodies()` recognised one shell function form
+
+Yesterday's commit `c51c881` added the rule that a gate command inside
+a function nothing calls is not a command that runs. The rule matched
+only `name() {`. Every other form bash accepts still hid the same
+command in plain sight, each confirmed valid shell whose body never
+runs, and each measured as counted-as-coverage before the fix:
+
+- `function never_called {` - the keyword form without parentheses;
+- `never-called() {` - a hyphenated name, which bash allows;
+- `never_called() (` - a parenthesis body;
+- `never_called() {` followed by `echo "}}"` - an unbalanced brace in
+  a string, which drove the depth count negative and exposed every
+  line after it as top-level text. `echo }}` unquoted did the same.
+
+The fix is one wider rule, not four patches: the definition pattern
+now covers the keyword form, any name that is not a shell
+metacharacter, and both body delimiters, with the body opener allowed
+on the following line; and `_body_depth_change()` counts delimiters
+the way the shell does - quoted text removed first, braces counted
+only as whole words - so a brace that is not a delimiter cannot end a
+body early. `${HOME}`, `awk '{...}'`, `echo "}}"` and `echo }}` all
+leave the depth alone.
+
+Checked for over-reach: all three readers were run over all
+twenty-five shell sources and workflow files at the old and new rule,
+with zero differences, and the real gate sources still yield all five
+pytest command lines.
+
+### 2. The addopts guard was reading a file pytest might not read
+
+`e562019` parses `pyproject.toml`'s `addopts` with a real TOML parser.
+That is only worth anything if `pyproject.toml` is the file pytest
+reads. Measured with pytest 9.1.1: a `pytest.ini` takes precedence and
+pytest then prints "configfile: pytest.ini (WARNING: ignoring pytest
+config in pyproject.toml!)" and ignores pyproject entirely -
+testpaths, pythonpath and all three markers with it. `.pytest.ini`
+behaves identically. `tox.ini` and `setup.cfg` are inert while
+pyproject keeps its `[tool.pytest.ini_options]` table, and were
+measured to be.
+
+A bare `pytest.ini` is caught anyway, loudly: it takes `pythonpath`
+with it, so collection fails with four errors at exit code 2. The
+silent one copies this repository's testpaths, pythonpath and markers
+across and adds `addopts = --collect-only`. Measured against the real
+gate: pre-fix it printed "224/244 tests collected" and exit code 0,
+having executed nothing, while the addopts check read a perfectly
+clean `pyproject.toml`. Post-fix it is refused at exit code 2.
+
+`effective_pytest_config_file(repo_root)` resolves pytest's real
+precedence order and the gate refuses anything but `pyproject.toml`,
+including no configuration file at all. One rule closes all five
+candidate files at once, which is why no second INI `addopts` parser
+was added - the redundant-rule mistake from the previous entry.
+
+### 3. Nothing pinned that the gate calls its own refusal
+
+Deleting `_ensure_pytest_config_runs_tests(repo_root)` from
+`_run_fast_checks()` left the entire test file passing: every test
+proved the rule worked, none proved the gate used it. This is the
+vacuity class Copilot raised against the installer views, one file
+further along. `test_the_lightweight_gate_applies_its_own_pytest_config_refusal`
+reads `scripts/quality_check.py` with `ast` - a name in a comment or a
+string cannot satisfy it - and checks both that the call exists and
+that it comes before pytest starts, since a refusal applied after
+pytest has reported a pass proves nothing. Both sabotages fail it.
+
+### 4. A comment that was wrong
+
+`_selection_option()` said "argparse accepts any unambiguous prefix,
+so `--col` is `--collect-only`". Measured: pytest rejects `--col`,
+`--desel` and `--ign` with "unrecognized arguments" and exit code 4.
+The behaviour is kept - refusing an abbreviation costs nothing and
+does not depend on that staying true - but it is now recorded as
+deliberately stricter than pytest rather than as a fact about
+argparse.
+
+### Candidates tested and rejected
+
+- Abbreviated long selection options in a gate command: pytest exits 4
+  on every abbreviation measured, so they are loud, not silent. No
+  reader change.
+- `tox.ini` and `setup.cfg` `addopts`: inert while pyproject.toml
+  carries the pytest table. Covered by the precedence rule above
+  rather than by parsing them.
+- Defined-but-never-called checks elsewhere: every function in
+  `scripts/quality_check.py`, `python/repo_utils.py` and
+  `scripts/compare_root_outputs.py` is either called in its own file
+  or referenced by another, and all five gates in
+  `scripts/run_all_gates.sh` are wrapped in `run_gate`.
+
+### Verification performed
+
+- Eight hidden shell forms, each run under `bash -n` and then executed
+  to confirm it is valid shell whose body never runs, and each pinned
+  as a test case; five visible controls that must still be read as
+  real commands.
+- The rule reverted with the new cases kept: they fail. Restored: they
+  pass.
+- The real repository sabotaged with a `pytest.ini` twice - bare, and
+  copying pyproject's settings - each measured before and after the
+  fix, and removed both times.
+- The guard call deleted, and moved after pytest: both fail the new
+  wiring test.
+- `python scripts/quality_check.py --mode full`: 246 collected, 226
+  passed, 20 deselected, Ruff clean, Black clean (39 files), exit code
+  0. Documented lightweight (246/226/20) and prepared-dependency
+  (42/2/40) figures updated.
+- Under the LCG Python 3.9.12: 2 passed for the prepared-dependency
+  gate, 3 passed for the new and extended checks, and
+  `effective_pytest_config_file()` resolves correctly there (`tomli`
+  and `configparser` both present).
+- CI for `c51c881`: run 34351580191, attempt 1, success - all seven
+  gate steps including the scientific and real-ROOT plotting gates.
+- `grep -nE '[[:blank:]]+$'` and `git diff --check`: clean.
+
+### Remaining open chunks
+
+None.
+
+## 2026-09-09 — A heredoc printed a gate command and the coverage checks read it as a command that runs
+
+Found by re-running every earlier Copilot finding against the current
+code as a regression suite instead of trusting the earlier verdicts.
+Fifteen of sixteen still held; the heredoc case did not.
+
+`_executable_command_lines()` has dropped heredoc bodies since the
+installer checks were written - a heredoc body is data being printed,
+not a command. `_pytest_command_lines()`, which every gate-coverage
+assertion goes through, never had that rule. So all six spellings of a
+heredoc hid a gate command from the coverage checks while the installer
+checks caught the same text: `<<EOF`, `<<'EOF'`, `<<"EOF"`, `<<-EOF`, a
+heredoc redirected into a file, and one inside a workflow `run:` block.
+
+Measured on the real script, not synthetically: wrapping the whole of
+Gate 5 - the plotting and hot-path real-ROOT gate, eight test files -
+in `cat <<'GATE5' ... GATE5` leaves valid shell that prints the pytest
+command and runs nothing, so `failures` stays at zero and the script
+reports every gate passed. Against the pre-fix reader all three
+coverage tests passed on that sabotage. Against the fixed reader two
+of them fail.
+
+This is the third instance of one defect: a rule that exists in one
+reader and not the sibling reader that needs it. The first cost a
+review round (the two pytest filter checks), the second was the
+redundant `-p` rule removed yesterday. The fix follows the same
+resolution as the first: `_outside_heredoc_bodies()` is one function
+with two callers, rather than a second copy of the scan.
+
+Checked for over-reach: all four readers give byte-identical output on
+all twenty-five real shell and workflow sources, and the real sources
+still yield the same pytest command lines (four in
+`scripts/run_all_gates.sh`, one in `.githooks/pre-commit`, four in
+`.github/workflows/scientific-analysis.yml`).
+
+### Verification performed
+
+- The six heredoc spellings pinned as a test, each measured as counted
+  before the fix and dropped after; `bash` confirmed to print rather
+  than run a heredoc body.
+- Two controls in the same test: a real gate command *after* a heredoc
+  is still read as a command, and an unterminated heredoc swallows the
+  rest of the file, which is what the shell does.
+- The heredoc filter removed from the pytest pipeline with the test
+  kept: it fails. Restored: it passes.
+- The Gate 5 sabotage on the real `scripts/run_all_gates.sh`, run
+  against both the pre-fix and the fixed reader, and restored.
+- `python scripts/quality_check.py --mode full`: 247 collected, 227
+  passed, 20 deselected, Ruff clean, Black clean (39 files), exit code
+  0. Documented lightweight (247/227/20) and prepared-dependency
+  (43/2/41) figures updated.
+
+### Remaining open chunks
+
+None.
+
+## 2026-09-09 — The mirror of the heredoc gap: an installer command inside a function nothing calls
+
+The previous entry fixed a rule that existed in the installer reader
+and not the gate reader. Checking the same pair the other way round
+found the opposite gap. `_shell_invocation_lines()` dropped function
+*definition* lines but kept the bodies, and
+`_executable_command_lines()` - the view every "this installer really
+does X" assertion reads - kept both.
+
+Measured on the real `install.sh`: replacing its two build calls with
+`true` leaves a valid installer that builds nothing at all, and all
+forty-three policy tests still passed, because the two unreachable
+function bodies were still being read as commands the installer runs.
+With the fix, `test_install_script_is_non_destructive` fails on that
+sabotage.
+
+### Why this is not the same rule as the gate reader's
+
+The first attempt applied the gate reader's rule - a command has to sit
+at top level - to the installer view as well. Measured against the real
+sources, that dropped over a hundred real commands from `install.sh`
+and `scripts/install_pyBumpHunter.sh`, which put nearly everything they
+do inside functions they do call: `require_file`, `verify_dependency`,
+`build_cpp_dependency`, `fail`. The gate sources are the opposite -
+every pytest command in all five gate invocations is already at top
+level, `run_gate` receiving it as an argument - so the stronger rule
+costs nothing there.
+
+So the two readers keep different rules, deliberately and for a
+measured reason, but share one implementation:
+`_function_definition_spans(lines, only_uncalled=...)` returns each
+definition's span, and `_outside_function_bodies()` drops either every
+body or only the bodies of functions whose name is never used outside
+their own span. Stated plainly in the docstring: whether a function is
+*reachable* is a call-graph problem this does not solve - a name used
+inside another function that nothing calls still counts as a call - so
+it errs towards keeping a body rather than hiding one.
+
+### The wrong first attempt, recorded
+
+Applying the strict rule to the installer view was checked against all
+twenty-five real shell and workflow sources before being kept, which is
+how the over-reach was caught: six of them differed, listing the
+hundred-plus commands it would have hidden. The comparison across all
+real sources is now run for every change to these readers, and the
+narrow rule passes it with zero differences.
+
+One committed test changed rather than being added to: the guarded-body
+case in `test_the_installer_views_reject_text_that_never_runs` used a
+`run_build` that was never called, so under the new rule its body is
+dropped before the `if false` check can see it. The case now calls
+`run_build`, which is the realistic threat, and the uncalled variant is
+pinned separately as producing no commands at all.
+
+### Verification performed
+
+- `install.sh` sabotaged at both build call sites and run against the
+  pre-fix and fixed readers: 43 passed before, 1 failed after.
+  Restored.
+- The same sabotage attempted at one call site only, which proved
+  nothing - the assertion was satisfied by a second `cmake --build` in
+  the sibling function that is still called. Recorded because the first
+  run looked like a clean pass.
+- All four readers compared against all twenty-five real shell and
+  workflow sources: zero differences.
+- `only_uncalled=True` removed with the new cases kept: they fail.
+  Restored: they pass.
+- All twelve gate-reader forms re-measured after the refactor:
+  unchanged, and the real sources still yield four pytest command lines
+  in `scripts/run_all_gates.sh` and one in `.githooks/pre-commit`.
+- `python scripts/quality_check.py --mode full`: 247 collected, 227
+  passed, 20 deselected, Ruff clean, Black clean (39 files), exit code
+  0. Test count unchanged, so the documented figures still hold.
+- Under the LCG Python 3.9.12: 2 passed for the prepared-dependency
+  gate.
+
+### Remaining open chunks
+
+None.
+
+## 2026-09-09 — Third audit pass: the two shell readers misread ordinary bash, and one of them was already doing it
+
+Copilot's `rm report.txt` finding said the recursive-delete detector
+accepted a pattern with no leading dash at all, so an ordinary operand
+counted as a flag, and asked for the pattern to be made precise rather
+than left over-inclusive. Applied as a class to the two readers added
+in the two commits before this one, the same defect is in both, and in
+one of them it is not hypothetical.
+
+### A here-string is not a heredoc
+
+`_HEREDOC_OPENER` searched for `<<` anywhere in a line. Three other
+constructs spell it the same way, and all three were read as heredoc
+openers:
+
+- `<<<`, a here-string, whose operand is data on the same line rather
+  than a body below it. `bc <<< 'scale=2; 30/1.015'` was read as a
+  heredoc named `scale`, whose delimiter never appears again.
+- `<<` inside an arithmetic expansion, where it is a left shift:
+  `mask=$(( 1 << bits ))` opened a heredoc named `bits`.
+- `<<` inside quotes, where it is text: `echo "write it as <<STOP"`.
+
+Each then hid every line to the end of the file. Measured on the real
+sources: 253 of `install.sh`'s 253 command lines, 42 of 42 in
+`scripts/run_all_gates.sh`, 23 of 23 in `.githooks/pre-commit`. That
+leaves the always-false-guard check with nothing to read at all, and
+every "this file runs X" assertion failing on valid shell.
+
+This one was already live. `scripts/run_anaFit_flowchart.sh` and
+`scripts/run_nloFit_flowchart.sh` both contain
+`scalefactor=$( bc <<< 'scale=2; 3.3/0.342' )`, and each was losing 24
+real command lines to it. Neither file is read by a gate check today,
+so nothing failed - but the construct is in this repository already,
+not a hypothetical.
+
+The fix scans the line the way the shell reads it: quoted spans
+skipped, arithmetic expansions skipped, and `<<<` distinguished from
+`<<` before a delimiter is read.
+
+### An empty array initialisation is not a function definition
+
+`_SHELL_FUNCTION_DEFINITION` excluded shell metacharacters from a
+function name but not `=`, so `built_targets=()` matched as a
+definition named `built_targets=`. It then took the following line as
+the start of its body and dropped it; with a keyword-form definition on
+that line, it took that function's whole body as its own.
+
+Measured against bash: `built_targets=()` initialises an array and
+`type built_targets` reports no such command; `foo=bar() { :; }` is a
+syntax error, so no POSIX-form function name can contain `=`; but
+`function foo=bar { :; }` does define a function. So `=` is excluded
+from the POSIX form and kept in the keyword form, which is exactly what
+bash accepts.
+
+### The body ends where bash ends it
+
+Fixing the first two exposed a third, in the same code. Heredoc removal
+ran *after* continuations were joined, and `_join_continuations()`
+strips each line, so the terminator could only ever be compared against
+stripped text. Measured against bash: a plain `<<EOF` body ends only at
+a line that is exactly the delimiter - an indented `  EOF` does not end
+it, and neither does `EOF ` with a trailing space - while `<<-EOF`
+accepts leading tabs and not leading spaces. Comparing stripped text
+therefore ended a body early at an indented copy of its own delimiter,
+and read the real command below it as a command the file runs.
+
+The three rules are now one pass, `_command_text()`, because the order
+they are applied in is itself a correctness question and applying them
+separately got it wrong twice: a full-line comment has to go before
+openers are looked for, or `# cat <<EOF` hides the rest of the file; a
+body line has to be compared against its raw text, or a trailing
+comment turns `EOF # done` into a terminator bash does not see; and the
+body has to be found before continuations are joined, because joining
+strips the indentation the exact match needs.
+
+One consequence, found the same way: `_workflow_run_block_lines()`
+returned a `run:` block at its YAML indentation, but YAML strips a
+block scalar's indentation before the shell sees it. Once terminators
+were matched exactly, an indented `EOF` in a run block no longer ended
+its body and the real gate command below it disappeared. The reader now
+strips the block's own indentation, which is what GitHub actually feeds
+to bash.
+
+### One committed fixture changed rather than added to
+
+`test_executable_command_lines_ignores_comments_and_echoes` wrote its
+heredoc at Python indentation, so its terminator was indented too. It
+was passing because the body was never terminated, not because the body
+was dropped - the right answer for the wrong reason. Its terminator is
+now at column 0, the way bash requires and every real script writes it.
+
+### Verification performed
+
+- All four readers compared against all twenty-five real shell and
+  workflow sources: four differences, all of them the intended fix -
+  the two flowchart launchers gaining back the 24 command lines each
+  had been losing. The six gate and installer sources: byte-identical.
+- Every heredoc spelling re-measured against real bash before the fix
+  was written: plain, quoted, double-quoted, `<<-` with tabs, `<<-`
+  with spaces, a terminator with a trailing space, and an indented
+  terminator.
+- Four sabotages, each reverting one part of the fix, each confirmed to
+  fail the new cases and to pass again when restored: the opener
+  ignoring `<<<`/arithmetic/quotes, `=` allowed back into the POSIX
+  name, the terminator matched with `strip()`, and the run block kept
+  at its YAML indentation.
+- `python scripts/quality_check.py --mode full`: 247 collected, 227
+  passed, 20 deselected, Ruff clean, Black clean (39 files), exit code
+  0. Existing tests extended rather than added, so the documented
+  figures are unchanged.
+
+## 2026-09-09 — Fourth audit pass: the always-false guard was applied to four of six sources, and the wiring check read the wrong order
+
+Two findings, both of them Copilot comments applied as a class to the
+code written in answer to those same comments.
+
+### The guard rule reached four of the six real sources
+
+Copilot's suppressed comment at `tests/test_repo_utils.py:917` said the
+always-false-guard check was applied to the pre-commit hook and to
+neither gate source, so wrapping a gate's pytest command in
+`if false; then ... fi` left the coverage tests passing. The gate
+sources were fixed. Sweeping the same rule across every reader shows it
+was never applied to the other two:
+
+- `.github/workflows/tier1-root-comparison.yml`, whose `run:` block
+  carries the entire lightweight quality gate. Confirmed by sabotage
+  against the real file: both of its commands wrapped in
+  `if false; then ... fi`, and
+  `test_ci_runs_locked_lightweight_full_gate` passed.
+- `scripts/install_git_hooks.sh`. Confirmed the same way: its
+  `git config core.hooksPath .githooks` guarded, and both assertions
+  about that command passed while the mandatory local hook is never
+  installed.
+
+Rather than add the call in two more places, every real source now goes
+through one reader, `_gate_commands(text, description)`, which applies
+the guard once. This is the third time a rule has been present in one
+reader and absent in its sibling - the two pytest filter checks, the
+heredoc rule, and now this - so it is also pinned structurally:
+`test_every_real_source_is_read_through_the_guarded_reader` parses this
+test file with `ast` and refuses any new caller of
+`_executable_command_lines()` that is not on a named list. Adding a
+reader now fails until someone decides about the guard, instead of
+relying on remembering.
+
+### The wiring check compared positions in a breadth-first walk
+
+`test_the_lightweight_gate_applies_its_own_pytest_config_refusal` read
+`_run_fast_checks()`'s calls with `ast.walk()` and compared their
+positions in that walk. `ast.walk()` is breadth-first, not source
+order, so a shallower call reads as earlier however late it really is.
+Measured on synthetic source: with pytest started inside a conditional
+above the refusal - the exact order the check exists to forbid - the
+walk reported the refusal first and the assertion passed.
+
+It now reads the function's own statements in order, and requires the
+refusal to be a plain expression statement rather than anything
+conditional: it has to run every time, before the first statement that
+reaches `run_command`.
+
+### A candidate checked and rejected
+
+`effective_pytest_config_file()` was re-measured against real pytest
+on nine configuration layouts, including the four it had not been
+measured on: `tox.ini` with and without `[pytest]` beside a `setup.cfg`
+carrying `[tool:pytest]`, a `pyproject.toml` with no `ini_options`
+beside a `tox.ini` that has `[pytest]`, and `setup.cfg` alone. It
+agrees with pytest on all of them.
+
+The one divergence is an unparseable `pyproject.toml`: pytest exits 4
+with `ERROR: ...: Invalid value`, while the gate raises
+`TOMLDecodeError`. Both refuse loudly and neither can report a clean
+pass, so this is left as it is rather than given a separate error path -
+recorded because it was checked, not because it is a defect.
+
+### Verification performed
+
+- Both real sources sabotaged and restored: each is now rejected where
+  it passed before.
+- Four sabotages of the fix itself, each confirmed to fail and then to
+  pass when restored: the guard removed from the shared reader, each of
+  the two sources routed back around it, and the ordering check
+  returned to `ast.walk()` positions.
+- `python scripts/quality_check.py --mode full`: 248 collected, 228
+  passed, 20 deselected, Ruff clean, Black clean (39 files), exit code
+  0. The documented figures in `doc/TIER1_SYSTEM.md`,
+  `doc/TIER2_SYSTEM.md`, `doc/TIER3_SYSTEM.md` and
+  `doc/TIER1_ENVIRONMENT_PROVENANCE.md` are updated to match, and the
+  prepared-dependency gate to 44 collected, 2 passed, 42 deselected.
+
+## 2026-09-09 — Fifth audit pass: a command read as configuration, and an inventory that went stale a second time
+
+The last two findings from reading every Copilot comment as a class
+against the commits it never saw.
+
+### The mirror of the YAML metadata finding
+
+Copilot's comment on `tests/test_repo_utils.py:72` said whole-file YAML
+was being searched for commands, so a step `name:` quoting a command
+satisfied a coverage check after the real `run:` command was deleted.
+That produced `_workflow_run_block_lines()`, which answers "does this
+workflow run X" from `run:` blocks only.
+
+The same file is also asked the opposite question - "is this workflow
+configured with X" - and `_yaml_config_lines()` answered it from the
+whole file, `run:` blocks included. So a command was read as
+configuration, which is the same defect with the halves swapped.
+Confirmed by sabotage on the real workflow: with
+`python-version: "3.12.13"` repinned to `"3.9.0"` and its old text
+moved into a `run: echo 'python-version: "3.12.13"'`, the assertion
+that the lightweight CI gate is configured for 3.12.13 still passed
+while CI would have run on Python 3.9.
+
+The split is now made once, in `_workflow_lines()`, which returns both
+halves; the two readers take one each. All five configuration
+assertions in `test_ci_runs_locked_lightweight_full_gate` were checked
+against the clean file afterwards and are all satisfied by real YAML
+keys outside any `run:` block - `uses:` twice, `python-version:`,
+`cache-dependency-path:` and the `on.pull_request.branches` list.
+
+### The inventory went stale again
+
+Copilot's comment on `doc/TIER3_SYSTEM.md:149` said the document called
+`python/repo_utils.py` a four-function utility while
+`selection_affecting_addopts()` had been added. That was corrected to
+six. Read as a class, the same sentence was stale again:
+`pytest_addopts_words()` was public and unlisted, a seventh function
+absent from a map that claims to name them all.
+
+Nothing outside the module reads the words themselves - only
+`selection_affecting_addopts()` does, in the same file - so it is now
+`_pytest_addopts_words()`, named for what it is, alongside
+`_load_toml()`, `_selection_option()` and
+`_declares_pytest_configuration()`. The documented count of six is
+correct as it stands.
+
+Because that one sentence has now gone stale twice,
+`test_the_documented_repo_utils_inventory_names_every_public_function`
+reads the count and the names out of the module with `ast` and checks
+the document against them. Both failure modes are covered: a public
+function missing from the map, and a count that no longer matches.
+
+### Verification performed
+
+- The real workflow sabotaged and restored: repinned to 3.9.0 with the
+  old pin moved into a `run: echo`, the configuration assertion passed
+  before the fix and fails after it.
+- Three sabotages of the fix, each confirmed to fail and to pass when
+  restored: the configuration reader returned to reading the whole
+  file, the addopts helper made public again while unlisted, and the
+  documented count edited by hand to five.
+- `python scripts/quality_check.py --mode full`: 249 collected, 229
+  passed, 20 deselected, Ruff clean, Black clean (39 files), exit code
+  0. Documented figures updated across the four living documents, and
+  the prepared-dependency gate to 45 collected, 2 passed, 43
+  deselected.
+
+### Audit closed
+
+All forty-four Copilot findings - twenty-six inline comments and
+eighteen suppressed ones across thirteen reviews - have now been read
+as defect classes and re-applied to every commit made since the last
+review. Nine further defects were found and fixed this way, in three
+commits; two candidates were checked and rejected with the measurement
+recorded. No Copilot finding remains unaddressed, and no new Copilot
+review has arrived since the one on `09f56ae`.
+
+## 2026-09-09 — Sixth audit pass: the YAML splitter added in the fifth pass misread three block-scalar cases
+
+The fifth pass split a workflow into the shell inside its `run:` blocks
+and the YAML around it, because reading the whole file for either
+question was unsound in both directions. That splitter is new code, and
+no Copilot review has seen it: the last review is still the one on
+`09f56ae`, submitted before any of the audit commits were pushed. So
+the same findings were re-applied to the fix itself, and the same
+generalisation rule that found the earlier defects found three more
+here.
+
+PyYAML is not among the locked development dependencies, so the
+splitter has to be correct on its own rather than deferring to a
+parser. It was checked against PyYAML 6.0.3 installed into a scratch
+directory outside the project environment, purely as a measuring
+instrument.
+
+### A folded block is not one command per line
+
+A `run: >` block is folded: YAML joins consecutive non-empty lines with
+a single space, and only a blank line becomes a newline. So
+
+```yaml
+run: >
+  echo "about to run"
+  python -m pytest tests/test_pre_fit.py
+```
+
+reaches bash as one `echo` whose arguments happen to contain the word
+pytest, and runs no tests at all. Read line by line it looked like an
+echo that gets dropped followed by a real pytest invocation, and the
+coverage checks called that step covered. This is the same defect class
+as Copilot's comment on an echoed command being read as a command that
+runs, arriving through the YAML layer rather than the shell one.
+
+Confirmed silent by sabotage on the real file: with
+`.github/workflows/scientific-analysis.yml`'s plotting-layer step
+rewritten as a folded block - a step that, so written, really would run
+one command and no tests - the pre-fix reader left
+`test_ci_scientific_workflow_covers_every_requires_analysis_dependencies_test_file`
+passing. Nothing else in the suite noticed either.
+
+A folded block's lines are now folded the way YAML folds them, one
+command per paragraph, before any command check sees them. A literal
+`|` block is still one command per line, and a blank line inside a
+folded block is still a break.
+
+### Five spellings of a block header were read as inline commands
+
+The previous test for "does this `run:` open a block" was whether what
+followed it was empty once the characters `|>+-` were stripped. Measured
+against PyYAML 6.0.3, that test is wrong for every header carrying an
+indentation indicator or a comment: `|2`, `|2-`, `|-2`, `>2+` and
+`| # note` are all accepted headers, as is a bare `run:`, which opens a
+multi-line plain scalar that folds exactly as `>` does. Each was read
+as an inline command instead, which moved the block's whole body out of
+the command half of the split and into the YAML half - invisible to
+every check that asks what the workflow runs, including the
+always-false-guard refusal, and searched as configuration instead.
+
+Sabotage on the real file records which direction this fails in: with
+both of `.github/workflows/tier1-root-comparison.yml`'s blocks written
+as `|2`, the pre-fix reader failed
+`test_ci_runs_locked_lightweight_full_gate` outright, so on that file
+it is loud. The silent direction is the other half of the split, where
+command text arrives as configuration - the same false-positive path
+the fifth pass had just closed.
+
+The header is now matched as YAML defines it: the style character, then
+an indentation indicator and a chomping indicator in either order, then
+an optional comment. The indicator's own column arithmetic is
+deliberately not modelled - it is relative to the parent node, and no
+workflow here uses one - so the body's margin is still taken from its
+content, which is what YAML does absent an indicator.
+
+After the fix the splitter's `run:` lines were compared with what
+PyYAML reports for every `run:` value in both real workflow files:
+identical, 194 lines for `scientific-analysis.yml` and 3 for
+`tier1-root-comparison.yml`, and each file still exposes exactly one
+`python-version:` pin to the configuration reader.
+
+### The structural check looked only inside functions
+
+`test_every_real_source_is_read_through_the_guarded_reader`, also added
+in the fifth pass, exists so that no new caller of
+`_executable_command_lines()` can quietly skip the always-false guard.
+It walked the module's function definitions, so a call at module scope
+was invisible to it: a module-level constant built from a real source
+would have been read with no guard applied and the check would have
+reported no callers at all. That is the same class as Copilot's comment
+on the decorator scanner missing forms it did not look for - a check
+that passes because it looked in the wrong place.
+
+Calls are now attributed to their enclosing function by descent rather
+than by walking definitions, and a call in no function is attributed to
+`"<module>"`, which is not on the exemption list and therefore fails. A
+call inside a nested function is attributed to that nested function, so
+it has to be named deliberately too rather than hiding behind whatever
+encloses it.
+
+### Only `run:` blocks were tracked, so other block scalars were read as YAML
+
+Generalising the two fixes above one step further: the splitter tracked
+a block scalar only under `run:`. Any other key's block body was read
+line by line as ordinary YAML, and free text is neither commands nor
+configuration. `actions/github-script`'s `script: |` is the realistic
+case - its body is JavaScript - and a line inside such a body that
+happens to read `run: <command>` counted as a step that runs the
+command, while a line that happens to read `python-version: "..."`
+counted as the workflow's pin. Both halves of the split wrong at once,
+from one hole.
+
+Every key is now matched, and a block scalar under any key other than
+`run:` is dropped from both halves. A bare key with no `|` or `>` still
+opens a mapping rather than a block, so ordinary configuration is
+unaffected - checked explicitly, since treating `with:` as a block
+would have discarded the very keys the configuration reader exists to
+read.
+
+### Verification performed
+
+- Four sabotages of the fixes, each confirmed to fail exactly one test
+  and to pass when restored: folded blocks read one command per line
+  again, the old strip-based header test restored, the caller walk
+  returned to visiting function definitions only, and block tracking
+  narrowed back to `run:` keys.
+- Two sabotages of the real workflow files, each measured against both
+  the pre-fix and the post-fix reader, recorded above.
+- The splitter's output compared line by line with PyYAML 6.0.3 across
+  fifteen block-header spellings and both real workflow files.
+- `python scripts/quality_check.py --mode full`: 253 collected, 233
+  passed, 20 deselected, Ruff clean, Black clean (39 files), exit code
+  0. Documented figures updated across the four living documents, and
+  the prepared-dependency gate to 49 collected, 2 passed, 47
+  deselected.
+
+### On the previous entry's closing statement
+
+The entry above closed the audit on the grounds that every Copilot
+finding had been re-applied to every commit since the last review. That
+was true of the commits that existed when it was written, and it did
+not hold for long: the fifth pass's own fix was the newest unreviewed
+code in the repository, and applying the findings to it produced these
+four defects. The findings themselves remain fully swept - all
+forty-four, as classes - and no new Copilot review has arrived. What is
+now recorded, rather than closed, is that each pass adds code no review
+has seen, so the sweep has a fixed point only when a pass finds nothing.
+
+## 2026-09-09 — A quoted YAML key is the same key
+
+Immediately after the entry above, the same generalisation applied once
+more to the same regex. The splitter matched a bare key, so `"run": |`
+and `'run': |` matched nothing. Both are valid YAML that GitHub Actions
+runs, and both left the block's commands being read as configuration -
+exactly the case the entry above had just fixed for the unquoted
+spelling, in the one place the key itself is recognised. Measured
+against PyYAML 6.0.3, which loads both.
+
+The key may now carry a matched pair of quotes, and the block's column
+is taken from the match rather than by searching the line for the key
+text, so the quotes are accounted for rather than skipped. A mismatched
+pair is not treated as a quoted key.
+
+Two other spellings were measured and deliberately left alone: `run:|`
+with no space, and a tab after the header. PyYAML rejects both, so a
+workflow written that way never runs at all, and a reader that accepts
+them cannot mislead anything.
+
+### Verification performed
+
+- The splitter's `run:` lines compared with PyYAML's across all
+  forty-two combinations of three key spellings and fourteen block
+  headers: identical throughout, and still identical to every `run:`
+  value in both real workflow files.
+- One sabotage of the fix - the key regex narrowed back to unquoted
+  keys - confirmed to fail `test_every_block_scalar_header_opens_a_block`
+  and to pass when restored.
+- `python scripts/quality_check.py --mode full`: 253 collected, 233
+  passed, 20 deselected, Ruff clean, Black clean (39 files), exit code
+  0. No documented figure changed, because the case was added to an
+  existing test rather than a new one.
+
+## 2026-09-09 — Where the workflow split stops, and saying so out loud
+
+Two more YAML forms carry a `run:` command that a line-based split
+cannot see, both measured against PyYAML 6.0.3:
+
+- a flow mapping, `- {name: s, run: python -m pytest ...}`, whose
+  command sits on a line that is not a `run:` key, so the whole line
+  was read as configuration;
+- an alias, `run: *cmd`, whose command is defined elsewhere in the
+  file, so the run half received the text `*cmd` and nothing that
+  looks for a command found one.
+
+Both are valid YAML that GitHub Actions would run, and neither real
+workflow file uses either. The previous three entries each widened a
+regex to cover a spelling that had been missed, and this is where that
+approach stops being the right one: the end of widening is a YAML
+parser, and PyYAML is not among the locked development dependencies -
+it was used in this pass as a measuring instrument, installed outside
+the project environment, not added to it.
+
+So the boundary is now drawn explicitly. `_workflow_lines()` refuses a
+file containing either form, naming the line and saying why, rather
+than reading it as if it were block style. The refusal lives in the
+splitter itself, so no reader can be given a form it cannot read, and
+the check runs against both real workflow files as well as the
+synthetic cases - the same "one implementation, every caller" shape as
+the always-false-guard refusal.
+
+`run:|` with no space and a tab after the header were measured too and
+deliberately left accepted: PyYAML rejects both outright, so a workflow
+written that way never runs, and reading it cannot mislead anything.
+
+### Verification performed
+
+- One sabotage - the refusal unwired from `_workflow_lines()` -
+  confirmed to fail `test_the_workflow_split_refuses_yaml_it_does_not_model`
+  and to pass when restored.
+- Both real workflow files pass the refusal, and their `run:` lines are
+  still identical to PyYAML's.
+- `python scripts/quality_check.py --mode full`: 254 collected, 234
+  passed, 20 deselected, Ruff clean, Black clean (39 files), exit code
+  0. Documented figures updated across the four living documents, and
+  the prepared-dependency gate to 50 collected, 2 passed, 48
+  deselected.
+
+## 2026-09-09 — The refusal added last pass read shell as YAML
+
+The previous entry drew a boundary: a workflow written in a form the
+line-based split cannot read is refused rather than misread. That
+refusal was applied to the whole file before the split, which is where
+it went wrong - a block scalar's body is shell, not YAML. Measured
+against the committed reader, three pieces of ordinary shell inside a
+`run: |` block were each refused as a YAML form it does not model:
+
+- `{ echo a; echo b; } > log`, a brace group, read as a flow mapping;
+- a heredoc body carrying `paths: *default`, read as a YAML alias;
+- a JSON object piped to `jq`, read as a flow mapping again.
+
+None of that is YAML. It is the same mistake these readers exist to
+prevent - text read as the wrong language - arriving inverted: not a
+step's name read as a command, but a command read as YAML. It is the
+loud direction, so it would have stopped the whole gate on a workflow
+the reader can in fact read. The refusal now runs inside the split,
+line by line, and only on the lines the split reads as YAML.
+
+Checking the refusal against the forms it names then found it missing
+the ones that matter. It matched a flow collection only at the start of
+a line, so `- {name: s, run: cmd}` was refused while
+
+    steps: [{name: s, run: python -m pytest tests/test_x.py}]
+    step: {run: python -m pytest tests/test_x.py}
+
+- both valid YAML that GitHub Actions runs - were read as ordinary
+configuration with their commands silently lost: no run lines, no
+refusal, no complaint. A flow collection is now refused wherever it
+opens, in a value as well as at the start of a line, and a flow
+sequence of settings (`python-version: [3.9, "3.12"]`) with it, since
+two settings on one line cannot be read as configuration either. An
+Actions expression is not a flow collection and is deliberately still
+accepted: its brace follows a `$`.
+
+Two further readings were measured wrong against PyYAML 6.0.3.
+
+Folding does not apply to a more-indented line. The fifth pass modelled
+the paragraph rule and stopped there, so every line of a folded block
+was joined, and
+
+    run: >
+      echo "about to run"
+        python -m pytest tests/test_x.py
+
+was reported as one long echo that runs no tests, while YAML really
+hands bash the pytest invocation on a line of its own. That is the
+silent direction: a real command lost. The same two lines after a bare
+`run:` are one command, because a plain scalar's folding ignores
+indentation - so the scalar's style is now carried through the split
+rather than a single folded flag, and all three styles are measured.
+
+A step name spanning two lines leaked into the configuration half.
+`_yaml_config_lines()` dropped the line carrying the `name:` key and
+nothing else, so
+
+    - name: install the pinned
+        tier-2-m365 dependencies
+
+left `tier-2-m365 dependencies` being read as configuration. Sabotaged
+on the real `tier1-root-comparison.yml` - its trigger branch repinned
+to `tier-9-none` and the old branch name moved into a two-line step
+name - the committed reader still reported the workflow as configured
+for `tier-2-m365`, so `test_ci_runs_locked_lightweight_full_gate` would
+have passed while CI ran on a branch the workflow no longer names.
+Every continuation line of a plain scalar is now dropped, whichever key
+opened it: a line that is neither a key nor a sequence item carries no
+setting of its own. A block sequence's items are values, and stay.
+
+### Verification performed
+
+- The reader's `run:` lines compared with PyYAML's across 381 valid
+  combinations of three key spellings, sixteen block headers and eight
+  body shapes, including more-indented and blank lines: identical
+  throughout, and still identical to every `run:` value in both real
+  workflow files. Three further combinations PyYAML rejects outright.
+- Five sabotages, each confirmed to fail exactly one test and to pass
+  when restored. The whole-file refusal restored fails
+  `test_shell_inside_a_run_block_is_not_read_as_yaml`; the flow
+  collection narrowed back to line-initial fails
+  `test_the_workflow_split_refuses_yaml_it_does_not_model`; folding a
+  more-indented line, and treating a plain scalar as a folded block,
+  each fail `test_a_folded_block_does_not_fold_a_more_indented_line`;
+  the continuation rule removed fails
+  `test_a_step_name_spanning_two_lines_is_not_configuration`.
+- Neither real workflow file uses a flow collection, an anchor or an
+  alias, and neither contains a line that is neither a key nor a
+  sequence item, so all four defects were dormant on the files as
+  written today.
+- `python scripts/quality_check.py --mode full`: 257 collected, 237
+  passed, 20 deselected, Ruff clean, Black clean (39 files), exit code
+  0. Documented figures updated across the four living documents, and
+  the prepared-dependency gate to 53 collected, 2 passed, 51
+  deselected.
+
+## 2026-09-09 — Naming the command reader is using it
+
+`_callers_of()` exists to force every new place that reads a real gate
+or installer source to decide about the always-false guard: adding a
+caller fails
+`test_every_real_source_is_read_through_the_guarded_reader` unless the
+caller is named in `_UNGUARDED_COMMAND_READERS` deliberately. It looked
+for calls, and only for calls, so two ways of handing the reader a real
+source reported no caller at all:
+
+    SOURCES = list(map(_executable_command_lines, real_sources))
+    reader = _executable_command_lines
+
+Neither writes a call whose callee is that name. Both read every source
+with the guard unapplied while the check reported nothing to decide
+about - a check that misses the form rather than the rule, which is the
+same shape as the block headers and the quoted keys in the entries
+above. Naming the reader now counts as using it.
+
+The same walk attributed a use in a decorator or a default argument to
+the function being defined, although both are evaluated where the
+function is defined rather than when it is called. That let the
+exemption list hide the case it exempts: naming a decorated test in
+`_UNGUARDED_COMMAND_READERS` would have exempted a read happening at
+import time. Definition-time uses are now attributed to the enclosing
+scope, which at module level is `<module>` - a name the exemption list
+does not contain.
+
+### Verification performed
+
+- Four spellings measured against the committed walk and the fixed one:
+  passed by name, aliased, used in a decorator, used in a default
+  argument. All four reported no caller before and `<module>` after,
+  and a plain call inside a function is still attributed to that
+  function.
+- Two sabotages, each confirmed to fail
+  `test_the_guarded_reader_check_sees_a_use_that_is_not_a_call` and to
+  pass when restored: the name detection removed, and the decorator
+  attributed to the decorated function again.
+- Every use of `_executable_command_lines()` in this file is a direct
+  call, so the widened rule adds no caller and
+  `_UNGUARDED_COMMAND_READERS` is unchanged - the fix closes a hole
+  without loosening anything.
+- `python scripts/quality_check.py --mode full`: 258 collected, 238
+  passed, 20 deselected, Ruff clean, Black clean (39 files), exit code
+  0. Documented figures updated across the four living documents, and
+  the prepared-dependency gate to 54 collected, 2 passed, 52
+  deselected.
+
+## 2026-09-09 — The conditional-step check was a second workflow reader
+
+`_yaml_conditions()` refuses a workflow that makes a step or job
+conditional, because a condition can skip a gate while every command
+stays on the page. It read the workflow's raw text with a line-anchored
+`if:` pattern, and so was a second reader of the same file that never
+went through the split - which meant the refusal drawn two entries ago
+never applied to it. Three spellings of a really conditional step were
+invisible to it, all three confirmed with PyYAML 6.0.3 to load with a
+real `if` key:
+
+    - {name: s, if: false, run: make test}
+      "if": false
+      'if': false
+
+The flow mapping is the same form the split refuses; read as raw text
+it simply reported no condition. The two quoted keys are the same key,
+missed here for exactly the reason `"run": |` was missed by the
+block-scalar reader - the finding that produced its own entry above,
+unapplied to this pattern because nothing had looked at this pattern
+since.
+
+The detector now reads the configuration half of the split, so the
+refusal reaches it and a flow mapping fails loudly instead of being
+reported as unconditional, and it accepts a quoted `if:` key.
+
+Making that change exposed one more swallow in the split itself: a
+block scalar under a key other than `run:` had its key line dropped
+along with its body. Only the body is free text - the key is
+configuration - and with the key gone a condition written as `if: >`
+would have disappeared from the very check being wired up here. The key
+line now stays in the configuration half.
+
+### Verification performed
+
+- Six spellings of a condition measured against the committed detector
+  and the fixed one: block style plain, both quoted keys, `if: >`,
+  `if: |`, and the flow mapping. The three that were invisible are now
+  reported or refused; the two block-scalar spellings still report, and
+  an unconditional workflow still reports nothing.
+- Three sabotages, each confirmed to fail exactly the intended test and
+  to pass when restored: the detector reading raw text again, and the
+  quoted key dropped, both fail
+  `test_a_conditional_step_is_recognised_however_it_is_written`; the
+  block scalar's key line dropped again fails that test and
+  `test_a_block_scalar_under_another_key_is_neither_commands_nor_config`.
+- Both real workflow files report no condition, before and after, and
+  their `run:` lines are still identical to PyYAML's.
+- Eight more block-header spellings checked for the opposite error, a
+  form read as a header that PyYAML does not accept: `|#note`, `| note`,
+  `|-+`, `|+-`, `|2 3`, `>>`, `|0` and `|9`. PyYAML rejects every one of
+  them outright, so a workflow written that way never runs and reading
+  it either way cannot mislead a check - the same conclusion reached for
+  `run:|` and a tab after the header, and the reason none of them is
+  worth further widening.
+- `python scripts/quality_check.py --mode full`: 259 collected, 239
+  passed, 20 deselected, Ruff clean, Black clean (39 files), exit code
+  0. Documented figures updated across the four living documents, and
+  the prepared-dependency gate to 55 collected, 2 passed, 53
+  deselected.
+
+### On the seven passes so far
+
+Every pass has found defects in the code the previous pass added, and
+this one is no different: four of the eight defects fixed today are in
+the fixes committed yesterday, including the refusal that was meant to
+mark where the reader stops. That is not an argument against the
+passes - each defect was real, and two would have let a broken CI
+configuration report itself as correct - but it is an argument against
+reading any of these entries as a closing statement. The sweep is
+finished when a pass finds nothing. This one found eight.

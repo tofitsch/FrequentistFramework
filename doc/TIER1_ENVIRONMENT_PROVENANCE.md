@@ -18,9 +18,9 @@ Dependency records:
 
 Latest full lightweight gate:
 
-- 105 collected;
-- 103 passed;
-- 2 dependency tests deselected;
+- 259 collected;
+- 239 passed;
+- 20 dependency tests deselected;
 - 0 expected failures;
 - Ruff and Black passed;
 - exit code 0.
@@ -105,7 +105,7 @@ python -m pytest tests/test_analysis_workflows_integration.py \
   -k authoritative_setup_provides_scientific_runtime -v
 ```
 
-Latest runtime-readiness result: 1 passed, 2 deselected, 16.39 seconds, exit code 0.
+Latest runtime-readiness result: 1 passed, 2 deselected, 3.69 seconds, exit code 0.
 
 Scientific characterization:
 
@@ -114,7 +114,23 @@ python -m pytest tests/test_analysis_workflows_integration.py \
   -m "integration and requires_root" -v
 ```
 
-Latest scientific result: 1 passed, 2 deselected, 152.86 seconds, exit code 0.
+Latest scientific result: 1 passed, 2 deselected, 134.41 seconds, exit code 0.
+
+## Run every gate in one command
+
+```bash
+bash scripts/run_all_gates.sh
+```
+
+Runs the development gate, the prepared dependency gate, runtime
+readiness, scientific characterization, and every Tier-3 real-ROOT
+plotting-layer/hot-path-support test, in one command — the same five
+test gates `.github/workflows/scientific-analysis.yml` runs (that
+workflow additionally runs dependency build/check steps this script
+does not). The first two need no ROOT and always run; for the other
+three it fails loudly
+rather than skipping when `scripts/setup_buildAndFit.sh` cannot provide
+a ROOT runtime here.
 
 ## Non-destructive dependency build verification
 

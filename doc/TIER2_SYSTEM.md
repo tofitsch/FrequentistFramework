@@ -13,9 +13,9 @@ Verified development baseline:
 
 Latest full lightweight gate:
 
-- 105 collected;
-- 103 passed;
-- 2 prepared-dependency tests deselected;
+- 259 collected;
+- 239 passed;
+- 20 prepared-dependency tests deselected;
 - 0 expected failures;
 - Ruff passed;
 - Black passed;
@@ -111,6 +111,22 @@ python -m pytest tests/test_analysis_workflows_integration.py \
   -m "integration and requires_root" -v
 ```
 
+Run every gate above, plus Tier 1's scientific runtime-readiness gate
+and every Tier-3 real-ROOT plotting-layer/hot-path-support test - five
+gates in total - in one command:
+
+```bash
+bash scripts/run_all_gates.sh
+```
+
+The lightweight and prepared-dependency gates need no ROOT and always
+run first (the prepared-dependency tests only inspect the dependency
+checkouts with Git), so a missing CVMFS mount cannot hide a
+dependency-checkout failure. For the three ROOT-dependent gates the
+script fails loudly rather than skipping if
+`scripts/setup_buildAndFit.sh` cannot provide a ROOT runtime here,
+since its purpose is to run every gate.
+
 ## Pytest markers
 
 - `integration`: executes authoritative workflows
@@ -144,7 +160,24 @@ The suite covers:
 - CI policy;
 - optional pre-commit policy;
 - launcher permissions;
-- installation-contract checks.
+- installation-contract checks;
+- gate-script (`scripts/run_all_gates.sh`) and CI-workflow
+  (`.github/workflows/scientific-analysis.yml`) coverage of every
+  `requires_analysis_dependencies` test file, so a new one can never
+  silently run in no job at all;
+- the gate figures the living documents quote, checked three ways:
+  `test_documented_gate_figures_agree_across_every_living_document`
+  requires every document quoting a gate's latest collected/passed/
+  selected/deselected/seconds figure to quote the same value, and
+  requires the counts to add up (selected plus deselected equals
+  collected, which a stale figure usually breaks on its own);
+  `test_documented_gate_counts_match_a_real_collection` measures the
+  two ROOT-free gates by collecting them for real, which is the only
+  check that catches a count that has gone stale in every copy at once,
+  or in the one document that records it. Timings are compared between
+  documents but deliberately not measured - the same gate has taken
+  74.68s, 131.40s and 134.41s on this shared node for identical work,
+  so a recorded timing is an observation, not a property.
 
 ## Installation-policy status
 

@@ -76,6 +76,14 @@ bash scripts/install_git_hooks.sh
 
 This is a plain git-native hook (`.githooks/pre-commit`), not the third-party `pre-commit` framework — see [Tier 2 system](doc/TIER2_SYSTEM.md) for why that framework stays optional. Bypass for a single commit with `git commit --no-verify` if you must, but a bypassed commit still has to pass both gates in CI.
 
+### Run every gate in one command
+
+```bash
+bash scripts/run_all_gates.sh
+```
+
+Runs five gates in one command: the lightweight gate, the prepared external-dependency checks, the scientific runtime-readiness gate, the real J100/J50 scientific analysis, and every plotting-layer/hot-path-support test that needs a real ROOT runtime — the same five test gates `.github/workflows/scientific-analysis.yml` runs (that workflow additionally runs dependency build/check steps this script does not). The first two need no ROOT and always run. The other three require `scripts/setup_buildAndFit.sh` to actually provide a ROOT runtime here (CVMFS mounted); unlike the pre-commit hook above, the script fails loudly rather than skipping when that isn't available, since its whole purpose is to run everything.
+
 For complete operating and validation details, see:
 
 - [Tier 1 system](doc/TIER1_SYSTEM.md)

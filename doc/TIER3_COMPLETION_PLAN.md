@@ -280,12 +280,24 @@ correction in a new activity-log entry rather than editing this section.
 - Unrelated installer, CI, or dependency changes.
 - Any structural extraction of files other than the nine named across
   Section 0 and the Chunk 13–18 addition above — not
-  `python/analysis_reference.py`, `python/repo_utils.py`,
-  `python/run_injections_anaFit.py`'s own internals, nor any other script
-  under `python/` (signal injection, limit-setting, toy studies, and the
-  ~40 other scripts there remain untouched — they are not part of the
-  background-only J100/J50 canonical path this plan follows, per
-  `doc/TIER3_EXECUTION_TRACE.md`'s own trace of that path).
+  `python/analysis_reference.py`, `python/run_injections_anaFit.py`'s own
+  internals, nor any other script under `python/` (signal injection,
+  limit-setting, toy studies, and the ~40 other scripts there remain
+  untouched — they are not part of the background-only J100/J50
+  canonical path this plan follows, per `doc/TIER3_EXECUTION_TRACE.md`'s
+  own trace of that path). **`python/repo_utils.py` is the one
+  exception, not an oversight**: its `find_repo_root()` genuinely is on
+  that canonical path (`doc/TIER3_EXECUTION_TRACE.md`'s own trace
+  diagram shows `run_provenance.get_repository_root() ->
+  repo_utils.find_repo_root()` directly) — an earlier version of this
+  bullet listed it here incorrectly, alongside files that are actually
+  untouched by the workflow. It needed no extraction under this plan
+  because Tier 1/2's own prior work already brought it to the same
+  standard Tier 3 requires (small, single-purpose, individually-tested
+  functions, registered in `scripts/quality_check.py` — see
+  `doc/TIER1_SYSTEM.md`'s own "Authoritative files"). It is the tenth
+  file on the validated J100/J50 hot path, not a gap in this plan's
+  scope.
 - Fixing `python/ExtractPostfitFromWS.py`'s two dormant bugs (Chunk 16's
   own text) anywhere other than the two dedicated, explicitly-optional
   bug-fix chunks 16a/16b — never silently bundled into Chunk 16's own
@@ -404,7 +416,7 @@ specific functions that need them —
 like `FindBHWindow.py`'s own `matplotlib`/`uproot`/`pyBumpHunter`
 deferrals (Chunk 14). The remaining three — `ExtractFitParameters.py`
 (Chunk 15), `ExtractPostfitFromWS.py` (Chunk 16), and `PreFit.py`
-(Chunk 17, not yet executed) — keep a module-level `import ROOT` today,
+(Chunk 17) — keep a module-level `import ROOT` today,
 unlike `run_fit.py`'s own deferred `import ROOT`: there is no ROOT-free
 subset of these three files worth isolating by deferring the import
 (confirmed directly: `PreFit.py`'s `__init__` already touches
@@ -1864,7 +1876,7 @@ python -m pytest tests/test_analysis_workflows_integration.py \
 | `PreFitter.__init__` | unchanged | — | unchanged |
 | `RandomizeParameters(self, function)` | unchanged | unchanged | unchanged |
 | `_build_candidate_functions(self, ...)` (**new**, private) | current histogram-range/log-mode state | the 10 hardcoded `TF1` candidates (`NParFunction[1..10]`, `LogNParFunction[1..10]`) | none beyond `TF1` construction — values unchanged |
-| `_select_best_parameter_sets(self, ...)` (**new**, private) | candidate functions, `nRetries1`, `nRetries2` | the ranked best-`nRetries2` parameter sets by chi2 | isolates the array/bisect bookkeeping (current ~lines 127–132); no ROOT calls of its own beyond scoring the candidates it's handed |
+| `_select_best_parameter_sets(self, ...)` (**new**, private) | candidate functions, `nRetries1`, `nRetries2` | the ranked best-`nRetries2` parameter sets by chi2 | isolates the array/bisect bookkeeping (current ~lines 127–132); histogram scoring is injected through the caller's `h.Chisquare(...)` closure, so it never touches the data histogram directly — it still calls `ROOT.TStopwatch`/`ROOT.TMath` for timing and the `Exp`/`Log` initial-guess math (this cell originally predicted "no ROOT calls of its own", which the implementation showed to be wrong) |
 | `Fit(self)` (existing, becomes the orchestrator) | — | `(bestPars, nbkg)`, unchanged | reads/log-transforms the data histogram, calls the two new helpers above, refits the survivors with `TH1::Fit` |
 | `main(args)` | unchanged | unchanged | unchanged — still unused from the pipeline |
 
@@ -1903,8 +1915,9 @@ physics-correctness check).
   built with the documented names/forms) and
   `_select_best_parameter_sets()` written, if its signature allows,
   against a plain scoring callable + candidate list rather than a live
-  ROOT histogram — this repository's first stub-free, fast unit test of
-  any piece of `PreFit.py`'s own logic, if achievable; if the separation
+  ROOT histogram — this repository's first fast, ROOT-stubbed unit test
+  of any piece of `PreFit.py`'s own logic (still stubbing `ROOT.TStopwatch`/
+  `ROOT.TMath` for timing and initial-guess math), if achievable; if the separation
   cannot be made ROOT-free without changing `Fit()`'s external behavior,
   state that explicitly rather than forcing it.
 - Register `python/PreFit.py` and `tests/test_pre_fit.py`.

@@ -87,8 +87,50 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _ensure_pytest_config_runs_tests(repo_root: Path) -> None:
+    """Refuse to run if pytest's own config would deselect everything.
+
+    `addopts` applies to every invocation, so `-k`, `--deselect` or
+    `--collect-only` there empties every gate in the repository while
+    pytest still exits 0. This has to be checked here, before pytest
+    starts: a test cannot catch a configuration that stops tests from
+    running. `tests/test_repo_utils.py` checks the same rule from the
+    other side, using these same functions.
+
+    Which file that configuration comes from is checked first, because
+    reading pyproject.toml only proves anything if pyproject.toml is
+    the file pytest reads. A `pytest.ini` - even an empty one - takes
+    precedence over it and makes pytest ignore it completely.
+    """
+    sys.path.insert(0, str(repo_root / "python"))
+    from repo_utils import effective_pytest_config_file, selection_affecting_addopts
+
+    config_file = effective_pytest_config_file(repo_root)
+    if config_file != "pyproject.toml":
+        found = f"from {config_file}" if config_file else "from no file at all"
+        print(
+            f"ERROR: pytest would read its configuration {found}, not pyproject.toml. "
+            "testpaths, pythonpath and all three markers live in pyproject.toml, and "
+            "pytest ignores it entirely once a higher-precedence file exists, so this "
+            "gate cannot report a pass. Remove the other file, or move the "
+            "configuration into it deliberately and update this check."
+        )
+        raise SystemExit(2)
+
+    pyproject = repo_root / "pyproject.toml"
+    offending = selection_affecting_addopts(pyproject.read_text(encoding="utf-8"))
+    if offending:
+        print(
+            f"ERROR: pyproject.toml sets {offending} in pytest's addopts. Those apply to "
+            "every pytest invocation and can deselect every gate in this repository, so "
+            "this gate refuses to report a pass. Remove them from addopts."
+        )
+        raise SystemExit(2)
+
+
 def _run_fast_checks(repo_root: Path, test_targets: list[str]) -> None:
     _ensure_python_tools_available(["pytest"])
+    _ensure_pytest_config_runs_tests(repo_root)
     run_command(
         [
             sys.executable,
@@ -126,6 +168,7 @@ def main() -> None:
         "python/ExtractPostfitFromWS.py",
         "python/FindBHWindow.py",
         "python/plotPostFit.py",
+        "python/PreFit.py",
         "python/repo_utils.py",
         "python/run_anaFit.py",
         "python/run_cli.py",
@@ -148,6 +191,7 @@ def main() -> None:
         "tests/test_plot_edm.py",
         "tests/test_plot_post_fit.py",
         "tests/test_plot_postfit_macro.py",
+        "tests/test_pre_fit.py",
         "tests/test_read_bumphunter_results.py",
         "tests/test_repo_utils.py",
         "tests/test_run_anaFit.py",
