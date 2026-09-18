@@ -1,7 +1,18 @@
 #!/bin/bash
 
+out_dir=${OUT_DIR:-$PWD/run}
+
 {
-    . scripts/setup_buildAndFit.sh
+    # Stop if the setup refuses: it `return`s on a wrong working directory, and `return`
+    # from a sourced script hands control straight back here. `return` works when this
+    # driver is sourced, as the header says to; `exit` covers `bash scripts/...` (which is
+    # how tests/repro.py runs it). Not a bare `exit` - that would kill an interactive shell.
+    if ! . scripts/setup_buildAndFit.sh; then
+        echo "ERROR: run this from the FrequentistFramework repository root." >&2
+        return 1 2>/dev/null || exit 1
+    fi
+
+    mkdir -p $out_dir
 
     # for pars in five six seven
     for pars in eight # seven eight nine  #six seven eight #nine #four five six seven eight #six #four five seven 
@@ -21,7 +32,7 @@
 
 	    #folder=/eos/user/l/lbazzano/TLA/FreqFrameOutputs/run_${rangelow}_${rangehigh}_${pars}Par
 	    #folder=/eos/user/l/lbazzano/TLA/FreqFrameOutputs/run_${rangelow}_${rangehigh}_${pars}Par_BH # using BumpHunter !!!
-	    folder=/eos/user/l/lbazzano/TLA/FreqFrameOutputs/run_systematics_${rangelow}_${rangehigh}_${pars}Par # using systematics !!!
+	    folder=$out_dir/run_systematics_${rangelow}_${rangehigh}_${pars}Par # using systematics !!!
 
 	    #signalfile=config/dijetisrTLA/signal/signal_dijetisrTLA.template
 	    signalfile=config/dijetisrTLA/signal/signal_dijetisrTLA_zprime_parametrized.template # using systematics !!!
